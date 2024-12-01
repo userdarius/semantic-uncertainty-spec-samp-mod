@@ -312,12 +312,18 @@ def main(args):
 
     if args.compute_p_ik:
         logging.info('Starting training p_ik on train embeddings.')
+        # Debug info
+        logging.info(f'Number of train embeddings: {len(train_embeddings)}')
+        logging.info(f'Number of train_is_false values: {len(train_is_false)}')
+        logging.info(f'Shape of first embedding: {train_embeddings[0].shape}')
+        
         # Train classifier of correct/incorrect from embeddings.
         p_ik_predictions = get_p_ik(
-            train_embeddings=train_embeddings, is_false=train_is_false,
-            eval_embeddings=validation_embeddings, eval_is_false=validation_is_false)
-        result_dict['uncertainty_measures']['p_ik'] = p_ik_predictions
-        logging.info('Finished training p_ik on train embeddings.')
+            train_embeddings=train_embeddings, 
+            is_false=train_is_false,
+            eval_embeddings=validation_embeddings, 
+            eval_is_false=validation_is_false
+        )
 
     if args.compute_p_ik_answerable:
         # Train classifier of answerable/unanswerable.
