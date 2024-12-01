@@ -3,6 +3,7 @@
 import logging
 import torch
 import wandb
+import numpy as np
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -14,16 +15,18 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
     """Fit linear classifier to embeddings to predict model correctness."""
     logging.info("Accuracy of model on Task: %f.", 1 - torch.tensor(is_false).mean())
 
-    # Trim train_embeddings to match validation size for testing
-    num_eval_samples = len(eval_embeddings)
-    train_embeddings = train_embeddings[:num_eval_samples]
-    is_false = is_false[:num_eval_samples]
-    logging.info(f"Using {num_eval_samples} samples for both training and validation")
-
     # Convert the list of tensors to a 2D tensor.
     train_embeddings_tensor = torch.cat(train_embeddings, dim=0)
-    # Convert the tensor to a numpy array.
     embeddings_array = train_embeddings_tensor.cpu().numpy()
+
+    # Trim both embeddings_array and is_false to match eval size
+    num_eval_samples = len(eval_embeddings)
+    embeddings_array = embeddings_array[:num_eval_samples]
+    is_false = np.array(is_false[:num_eval_samples])
+
+    logging.info(f"Using {num_eval_samples} samples for both training and validation")
+    logging.info(f"Embeddings array shape: {embeddings_array.shape}")
+    logging.info(f"is_false length: {len(is_false)}")
 
     # For very small test sets, use a smaller test_size
     test_size = min(0.2, 1 / len(embeddings_array))
