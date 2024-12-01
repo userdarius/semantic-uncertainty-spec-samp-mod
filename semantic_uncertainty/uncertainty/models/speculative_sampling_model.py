@@ -25,6 +25,13 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         stop_sequences="default",
         max_new_tokens=20,
     ):
+
+        # Add 8-bit quantization suffix if not already present
+        if not target_model_name.endswith("-8bit"):
+            target_model_name += "-8bit"
+        if not approx_model_name.endswith("-8bit"):
+            approx_model_name += "-8bit"
+
         super().__init__(target_model_name, stop_sequences, max_new_tokens)
         self.approx_model = HuggingfaceModel(
             approx_model_name, stop_sequences, max_new_tokens
