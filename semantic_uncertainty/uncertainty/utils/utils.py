@@ -81,25 +81,25 @@ def get_parser(stages=["generate", "compute"]):
         parser.add_argument(
             "--num_samples",
             type=int,
-            default=3,  # Modified from 400
+            default=400,  # Modified from 400
             help="Number of samples to use",
         )
         parser.add_argument(
             "--num_few_shot",
             type=int,
-            default=2,  # Modified from 5
+            default=20,  # Modified from 5
             help="Number of few shot examples to use",
         )
         parser.add_argument(
             "--p_true_num_fewshot",
             type=int,
-            default=2,  # Modified from 20
+            default=20,  # Modified from 20
             help="Number of few shot examples to use",
         )
         parser.add_argument(
             "--num_generations",
             type=int,
-            default=2,  # Modified from 10
+            default=10,  # Modified from 10
             help="Number of generations to use",
         )
         parser.add_argument(
@@ -196,7 +196,7 @@ def get_parser(stages=["generate", "compute"]):
         )
         # Modified for testing
         parser.add_argument(
-            "--num_eval_samples", type=int, default=3
+            "--num_eval_samples", type=int, default=int(1e19)
         )  # Modified from int(1e19)
         parser.add_argument(
             "--compute_predictive_entropy",
