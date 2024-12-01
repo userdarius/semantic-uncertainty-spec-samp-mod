@@ -220,35 +220,35 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         else:
             hidden = outputs.hidden_states
 
+        # Add debug logging
+        logging.error(f"Hidden length: {len(hidden)}")
+        if len(hidden) > 0:
+            logging.error(f"First hidden element type: {type(hidden[0])}")
+            if isinstance(hidden[0], list):
+                logging.error(f"First hidden element first item type: {type(hidden[0][0])}")
+                logging.error(f"First hidden element first item shape: {hidden[0][0].shape}")
+            else:
+                logging.error(f"First hidden element shape: {hidden[0].shape}")
+
         try:
-            if len(hidden) == 1:
-                logging.warning(
-                    "Taking first and only generation for hidden!"
-                )
-                last_input = hidden[0]
-            elif (n_generated - 1) >= len(hidden):
-                logging.error(
-                    "Taking last state because n_generated is too large"
-                )
-                last_input = hidden[-1]
+            last_input = hidden[n_generated - 1]
+            
+            # Direct tensor extraction - assume first element contains what we need
+            if isinstance(last_input, list):
+                tensor = last_input[0]  # Get first tensor from list
             else:
-                last_input = hidden[n_generated - 1]
-
-            # Handle the list structure
-            if isinstance(last_input, list) and len(last_input) > 0:
-                # Get the first tensor from the list
-                last_tensor = last_input[0]
-                # Extract the last token embedding directly from the tensor
-                last_token_embedding = last_tensor[:, -1, :].cpu()
+                tensor = last_input
+                
+            # Get embedding
+            if isinstance(tensor, torch.Tensor):
+                last_token_embedding = tensor[0, -1, :].cpu()  # Add batch dimension handling
             else:
-                # Fallback for other cases
-                last_layer = last_input if not isinstance(last_input, list) else last_input[0]
-                last_token_embedding = last_layer[:, -1, :].cpu()
-
+                raise ValueError(f"Unexpected tensor type: {type(tensor)}")
+                
         except Exception as e:
             logging.error(f"Error processing hidden states: {str(e)}")
-            logging.error(f"last_input type: {type(last_input)}")
-            logging.error(f"last_input structure: {last_input}")
+            logging.error(f"Hidden type: {type(hidden)}")
+            logging.error(f"Last input type: {type(last_input)}")
             raise
 
         # Compute transition scores exactly like HuggingFaceModel
