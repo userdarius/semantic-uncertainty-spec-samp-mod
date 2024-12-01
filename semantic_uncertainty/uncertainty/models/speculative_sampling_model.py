@@ -220,39 +220,31 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         else:
             hidden = outputs.hidden_states
 
-        if len(hidden) == 1:
-            logging.warning(
-                "Taking first and only generation for hidden! "
-                "n_generated: %d, n_input_token: %d, token_stop_index %d",
-                n_generated,
-                n_input_tokens,
-                token_stop_index,
-            )
-            last_input = hidden[0]
-        elif (n_generated - 1) >= len(hidden):
-            logging.error(
-                "Taking last state because n_generated is too large "
-                "n_generated: %d, n_input_token: %d, token_stop_index %d",
-                n_generated,
-                n_input_tokens,
-                token_stop_index,
-            )
-            last_input = hidden[-1]
-        else:
-            last_input = hidden[n_generated - 1]
-
-        # Modified part for handling tuple structure
         try:
-            if isinstance(last_input, tuple):
-                # Get the last layer from the tuple structure
-                last_layer = last_input[-1][
-                    -1
-                ]  # Access the last element of the last tuple
+            if len(hidden) == 1:
+                logging.warning(
+                    "Taking first and only generation for hidden!"
+                )
+                last_input = hidden[0]
+            elif (n_generated - 1) >= len(hidden):
+                logging.error(
+                    "Taking last state because n_generated is too large"
+                )
+                last_input = hidden[-1]
             else:
-                last_layer = last_input[-1]
+                last_input = hidden[n_generated - 1]
 
-            # Then get the last token embedding
-            last_token_embedding = last_layer[:, -1, :].cpu()
+            # Handle the list structure
+            if isinstance(last_input, list) and len(last_input) > 0:
+                # Get the first tensor from the list
+                last_tensor = last_input[0]
+                # Extract the last token embedding directly from the tensor
+                last_token_embedding = last_tensor[:, -1, :].cpu()
+            else:
+                # Fallback for other cases
+                last_layer = last_input if not isinstance(last_input, list) else last_input[0]
+                last_token_embedding = last_layer[:, -1, :].cpu()
+
         except Exception as e:
             logging.error(f"Error processing hidden states: {str(e)}")
             logging.error(f"last_input type: {type(last_input)}")
