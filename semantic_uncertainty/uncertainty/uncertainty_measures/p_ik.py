@@ -29,23 +29,25 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
     logging.info(f"is_false length: {len(is_false)}")
     logging.info(f"Unique classes in data: {np.unique(is_false)}")
 
-    # Check if we have at least two classes
-    if len(np.unique(is_false)) < 2:
+    # For very small datasets (less than 10 samples), skip train-test split
+    if len(embeddings_array) < 10:
         logging.warning(
-            "Only one class present in training data. Returning dummy predictions."
+            "Dataset too small for train-test split, using all data for training"
         )
-        # Return dummy predictions
-        X_eval = torch.cat(eval_embeddings, dim=0).cpu().numpy()
-        return np.zeros(X_eval.shape[0])  # or whatever default prediction makes sense
-
-    # For very small test sets, use a smaller test_size
-    test_size = min(0.2, 1 / len(embeddings_array))
-    logging.info(f"Using test_size: {test_size}")
-
-    # Split the data into training and test sets.
-    X_train, X_test, y_train, y_test = train_test_split(
-        embeddings_array, is_false, test_size=test_size, random_state=42
-    )
+        X_train = embeddings_array
+        y_train = is_false
+        X_test = embeddings_array  # Use same data for testing
+        y_test = is_false
+    else:
+        # Original train-test split logic
+        test_size = 0.2
+        X_train, X_test, y_train, y_test = train_test_split(
+            embeddings_array,
+            is_false,
+            test_size=test_size,
+            random_state=42,
+            stratify=is_false,
+        )  # Added stratification
 
     # Fit a logistic regression model.
     model = LogisticRegression()
