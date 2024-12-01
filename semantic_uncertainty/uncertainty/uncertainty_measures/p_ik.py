@@ -27,6 +27,16 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
     logging.info(f"Using {num_eval_samples} samples for both training and validation")
     logging.info(f"Embeddings array shape: {embeddings_array.shape}")
     logging.info(f"is_false length: {len(is_false)}")
+    logging.info(f"Unique classes in data: {np.unique(is_false)}")
+
+    # Check if we have at least two classes
+    if len(np.unique(is_false)) < 2:
+        logging.warning(
+            "Only one class present in training data. Returning dummy predictions."
+        )
+        # Return dummy predictions
+        X_eval = torch.cat(eval_embeddings, dim=0).cpu().numpy()
+        return np.zeros(X_eval.shape[0])  # or whatever default prediction makes sense
 
     # For very small test sets, use a smaller test_size
     test_size = min(0.2, 1 / len(embeddings_array))
