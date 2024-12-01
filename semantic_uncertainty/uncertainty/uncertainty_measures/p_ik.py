@@ -12,30 +12,29 @@ from sklearn.model_selection import train_test_split
 
 
 def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=None):
-    """Fit linear classifier to embeddings to predict model correctness.
-
-    Args:
-        train_embeddings: List of embedding tensors
-        is_false: List of 0.0/1.0 values indicating correctness
-        eval_embeddings: Optional list of evaluation embedding tensors
-        eval_is_false: Optional list of evaluation 0.0/1.0 values
-    """
-    # Convert list of tensors to numpy array
-    train_embeddings_tensor = torch.cat(train_embeddings, dim=0)
+    """Fit linear classifier to embeddings to predict model correctness."""
+    # Get mean embedding for each example
+    train_embeddings = [
+        emb.mean(dim=0) for emb in train_embeddings
+    ]  # Average over sequence length
+    train_embeddings_tensor = torch.stack(
+        train_embeddings, dim=0
+    )  # Stack instead of cat
     embeddings_array = train_embeddings_tensor.cpu().numpy()
 
-    # Convert is_false to numpy array if it isn't already
+    # Convert is_false to numpy array
     is_false = np.array(is_false)
 
-    # Log shapes and stats
     logging.info("Total training samples: %d", embeddings_array.shape[0])
     logging.info("Final training shape: %s", str(embeddings_array.shape))
     logging.info("Training labels shape: %s", str(is_false.shape))
+    logging.info("Unique classes in training data: %s", str(np.unique(is_false)))
     logging.info("Accuracy of model on Task: %f.", 1 - np.mean(is_false))
 
-    # Convert evaluation embeddings if provided
+    # Process eval embeddings similarly if provided
     if eval_embeddings is not None:
-        X_eval = torch.cat(eval_embeddings, dim=0).cpu().numpy()
+        eval_embeddings = [emb.mean(dim=0) for emb in eval_embeddings]
+        X_eval = torch.stack(eval_embeddings, dim=0).cpu().numpy()
         logging.info("Final evaluation shape: %s", str(X_eval.shape))
         if eval_is_false is not None:
             eval_is_false = np.array(eval_is_false)
