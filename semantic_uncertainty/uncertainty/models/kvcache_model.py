@@ -1,7 +1,7 @@
 import torch
 from typing import Optional
 
-from sampling.utils import norm_logits, sample
+from .utils import norm_logits, sample
 from transformers.models.bloom.modeling_bloom import BloomForCausalLM
 
 def _debug_show_kvcache(past_key_values):

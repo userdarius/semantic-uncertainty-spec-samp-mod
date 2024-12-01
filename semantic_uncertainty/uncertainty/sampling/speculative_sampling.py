@@ -2,8 +2,8 @@ import torch
 from tqdm import tqdm
 import torch
 
-from sampling.kvcache_model import KVCacheModel
-from sampling.utils import norm_logits, sample, max_fn
+from kvcache_model import KVCacheModel
+from utils import norm_logits, sample, max_fn
 from globals import Decoder
 
 @torch.no_grad()

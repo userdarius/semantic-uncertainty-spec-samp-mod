@@ -1,0 +1,143 @@
+_wandb:
+    value:
+        cli_version: 0.18.7
+        m: []
+        python_version: 3.11.10
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 55
+                - 71
+                - 95
+                - 100
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 55
+                - 71
+                - 95
+                - 100
+            "3":
+                - 16
+                - 23
+                - 55
+            "4": 3.11.10
+            "5": 0.18.7
+            "6": 4.46.3
+            "8":
+                - 5
+            "12": 0.18.7
+            "13": darwin-arm64
+analyze_run:
+    value: true
+answerable_only:
+    value: false
+approx_model_name:
+    value: Llama-2-7b-chat
+assign_new_wandb_id:
+    value: false
+brief_always:
+    value: false
+brief_prompt:
+    value: default
+compute_accuracy_at_all_temps:
+    value: true
+compute_context_entails_response:
+    value: false
+compute_p_ik:
+    value: true
+compute_p_ik_answerable:
+    value: false
+compute_p_true:
+    value: true
+compute_p_true_in_compute_stage:
+    value: false
+compute_predictive_entropy:
+    value: true
+compute_uncertainties:
+    value: true
+condition_on_question:
+    value: true
+dataset:
+    value: trivia_qa
+debug:
+    value: false
+enable_brief:
+    value: true
+entailment_cache_id:
+    value: null
+entailment_cache_only:
+    value: false
+entailment_model:
+    value: deberta
+entity:
+    value: null
+eval_wandb_runid:
+    value: null
+experiment_lot:
+    value: Unnamed Experiment
+get_training_set_generations:
+    value: true
+get_training_set_generations_most_likely_only:
+    value: true
+metric:
+    value: squad
+model_max_new_tokens:
+    value: 50
+model_name:
+    value: Llama-2-7b-chat
+num_eval_samples:
+    value: 1e+19
+num_few_shot:
+    value: 5
+num_generations:
+    value: 10
+num_samples:
+    value: 400
+ood_train_dataset:
+    value: null
+p_true_hint:
+    value: false
+p_true_num_fewshot:
+    value: 20
+prompt_type:
+    value: default
+random_seed:
+    value: 10
+recompute_accuracy:
+    value: false
+restore_entity_eval:
+    value: null
+restore_entity_train:
+    value: null
+reuse_entailment_model:
+    value: false
+strict_entailment:
+    value: true
+target_model_name:
+    value: Llama-2-7b-chat
+temperature:
+    value: 1
+train_wandb_runid:
+    value: null
+use_all_generations:
+    value: true
+use_context:
+    value: false
+use_mc_options:
+    value: true
+use_num_generations:
+    value: -1
+use_speculative_sampling:
+    value: true

@@ -1,7 +1,7 @@
 from .huggingface_models import HuggingfaceModel
 import torch
-from sampling.kvcache_model import KVCacheModel
-from sampling.utils import sample, max_fn
+from .kvcache_model import KVCacheModel
+from .utils import sample, max_fn
 from dataclasses import dataclass
 from typing import Optional, Tuple
 import logging

@@ -1,0 +1,44 @@
+{
+  "os":  "macOS-15.1.1-arm64-arm-64bit",
+  "python":  "3.11.10",
+  "startedAt":  "2024-12-01T13:01:12.272144Z",
+  "args":  [
+    "--use_speculative_sampling",
+    "--model_name=Llama-2-7b-chat",
+    "--dataset=trivia_qa"
+  ],
+  "program":  "/Users/darius/Code/deep-learning/llms/mlo/mod-1/semantic_uncertainty/semantic_uncertainty/generate_answers.py",
+  "codePath":  "semantic_uncertainty/generate_answers.py",
+  "git":  {
+    "remote":  "https://github.com/userdarius/semantic-uncertainty-spec-samp-mod.git",
+    "commit":  "819fbed1bee542f21aace694a189d9c6a30030d7"
+  },
+  "email":  "darius.foodei@gmail.com",
+  "root":  "./darius/uncertainty",
+  "host":  "Dariuss-MacBook-Pro.local",
+  "username":  "darius",
+  "executable":  "/Users/darius/miniconda3/envs/semantic_uncertainty/bin/python3",
+  "codePathLocal":  "semantic_uncertainty/generate_answers.py",
+  "cpu_count":  8,
+  "cpu_count_logical":  8,
+  "disk":  {
+    "/":  {
+      "total":  "494384795648",
+      "used":  "418652708864"
+    }
+  },
+  "memory":  {
+    "total":  "17179869184"
+  },
+  "cpu":  {
+    "count":  8,
+    "countLogical":  8
+  },
+  "apple":  {
+    "name":  "Apple M1 Pro",
+    "ecpuCores":  2,
+    "pcpuCores":  6,
+    "gpuCores":  14,
+    "memoryGb":  16
+  }
+}
