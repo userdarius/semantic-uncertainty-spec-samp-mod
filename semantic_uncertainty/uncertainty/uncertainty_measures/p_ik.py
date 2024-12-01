@@ -15,38 +15,34 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
     """Fit linear classifier to embeddings to predict model correctness."""
     logging.info("Accuracy of model on Task: %f.", 1 - torch.tensor(is_false).mean())
 
-    # Convert evaluation embeddings first to get size
-    X_eval = torch.cat(eval_embeddings, dim=0).cpu().numpy()
+    # Process evaluation embeddings first
+    eval_embeddings_tensor = torch.cat(eval_embeddings, dim=0)
+    X_eval = eval_embeddings_tensor.cpu().numpy()
     num_eval_samples = len(X_eval)
+    logging.info(f"Evaluation samples: {num_eval_samples}")
 
-    # Convert and trim training data
-    train_embeddings_tensor = torch.cat(train_embeddings, dim=0)
-    embeddings_array = train_embeddings_tensor.cpu().numpy()
-    embeddings_array = embeddings_array[:num_eval_samples]
-    is_false = np.array(is_false[:num_eval_samples])
+    # Process and trim training embeddings
+    train_embeddings_tensor = torch.cat(train_embeddings[:num_eval_samples], dim=0)
+    X_train = train_embeddings_tensor.cpu().numpy()
+    y_train = np.array(is_false[:num_eval_samples])
 
-    logging.info(f"Using {num_eval_samples} samples for both training and validation")
-    logging.info(f"Training embeddings shape: {embeddings_array.shape}")
+    logging.info(f"Training samples after trimming: {len(X_train)}")
+    logging.info(f"Training embeddings shape: {X_train.shape}")
     logging.info(f"Evaluation embeddings shape: {X_eval.shape}")
-    logging.info(f"Unique classes in training data: {np.unique(is_false)}")
+    logging.info(f"Unique classes in training data: {np.unique(y_train)}")
 
     # For very small datasets (less than 10 samples), skip train-test split
-    if len(embeddings_array) < 10:
+    if len(X_train) < 10:
         logging.warning(
             "Dataset too small for train-test split, using all data for training"
         )
-        X_train = embeddings_array
-        y_train = is_false
-        X_test = embeddings_array  # Use same data for testing
-        y_test = is_false
+        X_test = X_train.copy()  # Use same data for testing
+        y_test = y_train.copy()
     else:
+        # Original train-test split logic
         test_size = 0.2
         X_train, X_test, y_train, y_test = train_test_split(
-            embeddings_array,
-            is_false,
-            test_size=test_size,
-            random_state=42,
-            stratify=is_false,
+            X_train, y_train, test_size=test_size, random_state=42, stratify=y_train
         )
 
     # Fit model and get predictions
@@ -60,10 +56,9 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
     metrics, y_preds_proba = {}, {}
 
     for suffix, X, y_true in zip(suffixes, Xs, ys):
-        # Special handling for eval data
         if suffix == "eval":
             model = LogisticRegression()
-            model.fit(embeddings_array, is_false)
+            model.fit(X_train, y_train)  # Use trimmed training data
             convergence = {
                 "n_iter": model.n_iter_[0],
                 "converged": (model.n_iter_ < model.max_iter)[0],
