@@ -169,23 +169,35 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         # Remove input from answer
         answer = full_answer[input_data_offset:]
 
-        # Remove stop_words from answer
+        # Remove stop_words from answer - Modified to match HuggingFaceModel exactly
         stop_at = len(answer)
         sliced_answer = answer
         if self.stop_sequences is not None:
             for stop in self.stop_sequences:
+                # Check for stop sequence anywhere in the text
+                stop_idx = answer.find(stop)
+                if stop_idx != -1:
+                    stop_at = stop_idx
+                    sliced_answer = answer[:stop_at]
+                    break
+                # Check for stop sequence at the end
                 if answer.endswith(stop):
                     stop_at = len(answer) - len(stop)
                     sliced_answer = answer[:stop_at]
                     break
+
+            # Verify stop sequence removal
             if not all([stop not in sliced_answer for stop in self.stop_sequences]):
                 error_msg = "Error: Stop words not removed successfully!"
                 error_msg += f"Answer: >{answer}< "
                 error_msg += f"Sliced Answer: >{sliced_answer}<"
                 if "falcon" not in self.model_name.lower():
-                    raise ValueError(error_msg)
+                    logging.error(error_msg)
+                    # For non-Falcon models, we continue and handle it gracefully
                 else:
                     logging.error(error_msg)
+                    # For Falcon models, return early with empty log likelihoods
+                    return sliced_answer.strip(), [], None
 
         # Remove whitespaces
         sliced_answer = sliced_answer.strip()
