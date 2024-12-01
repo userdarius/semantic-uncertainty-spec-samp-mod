@@ -200,7 +200,7 @@ class SpeculativeSamplingModel(HuggingfaceModel):
             _ = target_model_cache.generate(x, 1)
 
             n = prefix_len + self.gamma - 1
-
+            accepted_tokens = 0
             # Accept/reject loop with logging
             for i in range(self.gamma):
                 j = x[:, prefix_len + i]
@@ -214,7 +214,6 @@ class SpeculativeSamplingModel(HuggingfaceModel):
                     )
                     n = prefix_len + i - 1
                     break
-
                 accepted_tokens += 1
                 logging.info(
                     f"Token {i+1} accepted (Target prob: {target_prob.item():.4f}, Approx prob: {approx_prob.item():.4f})"
