@@ -150,6 +150,7 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         inputs = self.tokenizer(input_data, return_tensors="pt").to("cuda")
         input_ids = inputs["input_ids"]
         n_input_tokens = input_ids.size(1)
+        logging.info(f"Input tokens: {n_input_tokens}")
 
         # Setup pad token id like HuggingFaceModel
         if (
@@ -163,8 +164,8 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         else:
             pad_token_id = None
 
+        # Initialize KV caches with logging
         logging.info("Initializing KV caches...")
-        # Initialize KV caches
         approx_model_cache = KVCacheModel(
             self.approx_model.model, temperature, top_k=20, top_p=0.9
         )
@@ -180,13 +181,10 @@ class SpeculativeSamplingModel(HuggingfaceModel):
             decoder_hidden_states=[],
         )
 
+        # Generation loop with logging
         generation_step = 0
         while outputs.sequences.shape[1] < n_input_tokens + self.max_new_tokens:
             generation_step += 1
-
-            logging.info(
-                f"Generating tokens... Current length: {outputs.sequences.shape[1]}"
-            )
             prefix_len = outputs.sequences.shape[1]
             logging.info(f"\nGeneration step {generation_step}:")
             logging.info(f"Current sequence length: {prefix_len}")
@@ -196,11 +194,13 @@ class SpeculativeSamplingModel(HuggingfaceModel):
             x = approx_model_cache.generate(outputs.sequences, self.gamma)
             logging.info(f"Approximation model generated {self.gamma} tokens")
 
-            logging.info("Generating from target model...")
+            # Get target model probabilities
+            logging.info("Getting target model probabilities...")
             _ = target_model_cache.generate(x, 1)
 
             n = prefix_len + self.gamma - 1
             accepted_tokens = 0
+
             # Accept/reject loop with logging
             for i in range(self.gamma):
                 j = x[:, prefix_len + i]
@@ -275,7 +275,7 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         # Remove input from answer
         answer = full_answer[input_data_offset:]
 
-        # Remove stop_words from answer - Modified to match HuggingFaceModel exactly
+        # Remove stop_words from answer
         stop_at = len(answer)
         sliced_answer = answer
         if self.stop_sequences is not None:
@@ -299,10 +299,8 @@ class SpeculativeSamplingModel(HuggingfaceModel):
                 error_msg += f"Sliced Answer: >{sliced_answer}<"
                 if "falcon" not in self.model_name.lower():
                     logging.error(error_msg)
-                    # For non-Falcon models, we continue and handle it gracefully
                 else:
                     logging.error(error_msg)
-                    # For Falcon models, return early with empty log likelihoods
                     return sliced_answer.strip(), [], None
 
         # Remove whitespaces
@@ -326,17 +324,24 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         else:
             hidden = outputs.hidden_states
 
-        # Debug logging
-        logging.debug(f"Hidden length: {len(hidden)}")
-        if len(hidden) > 0:
-            logging.debug(f"First hidden element type: {type(hidden[0])}")
-            if isinstance(hidden[0], list):
-                logging.debug(
-                    f"First hidden element first item type: {type(hidden[0][0])}"
-                )
+        # Debug logging for hidden states
+        logging.info(f"Hidden states processing:")
+        logging.info(f"n_generated: {n_generated}, hidden length: {len(hidden)}")
 
         try:
-            last_input = hidden[n_generated - 1]  # This gets us a list
+            if n_generated <= 0:
+                logging.error(f"Invalid n_generated value: {n_generated}")
+                raise ValueError(f"n_generated must be positive, got {n_generated}")
+
+            if n_generated - 1 >= len(hidden):
+                logging.error(
+                    f"Index out of range: trying to access index {n_generated - 1} but hidden length is {len(hidden)}"
+                )
+                # Fallback to last available hidden state
+                last_input = hidden[-1]
+                logging.warning("Falling back to last available hidden state")
+            else:
+                last_input = hidden[n_generated - 1]
 
             # Extract the actual tensor from the nested structure
             if isinstance(last_input, list) and len(last_input) > 0:
@@ -356,7 +361,6 @@ class SpeculativeSamplingModel(HuggingfaceModel):
                         raise ValueError("No tensors found in tuple")
                 else:
                     tensor = first_tuple
-
             else:
                 tensor = last_input
 
@@ -371,14 +375,13 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         except Exception as e:
             logging.error(f"Error processing hidden states: {str(e)}")
             logging.error(f"Hidden type: {type(hidden)}")
-            logging.error(f"Last input type: {type(last_input)}")
-            if isinstance(last_input, list) and len(last_input) > 0:
-                logging.error(f"First element type: {type(last_input[0])}")
-                if isinstance(last_input[0], tuple):
-                    logging.error(f"Tuple length: {len(last_input[0])}")
-                    logging.error(
-                        f"Tuple element types: {[type(x) for x in last_input[0]]}"
-                    )
+            if "last_input" in locals():
+                logging.error(f"Last input type: {type(last_input)}")
+            else:
+                logging.error("last_input was never assigned")
+            logging.error(f"Hidden states info:")
+            logging.error(f"- Length: {len(hidden)}")
+            logging.error(f"- n_generated: {n_generated}")
             raise
 
         # Compute transition scores exactly like HuggingFaceModel
