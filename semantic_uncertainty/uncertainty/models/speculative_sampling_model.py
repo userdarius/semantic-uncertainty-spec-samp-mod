@@ -220,35 +220,59 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         else:
             hidden = outputs.hidden_states
 
-        # Add debug logging
-        logging.error(f"Hidden length: {len(hidden)}")
+        # Debug logging
+        logging.debug(f"Hidden length: {len(hidden)}")
         if len(hidden) > 0:
-            logging.error(f"First hidden element type: {type(hidden[0])}")
+            logging.debug(f"First hidden element type: {type(hidden[0])}")
             if isinstance(hidden[0], list):
-                logging.error(f"First hidden element first item type: {type(hidden[0][0])}")
-                logging.error(f"First hidden element first item shape: {hidden[0][0].shape}")
-            else:
-                logging.error(f"First hidden element shape: {hidden[0].shape}")
+                logging.debug(
+                    f"First hidden element first item type: {type(hidden[0][0])}"
+                )
 
         try:
-            last_input = hidden[n_generated - 1]
-            
-            # Direct tensor extraction - assume first element contains what we need
-            if isinstance(last_input, list):
-                tensor = last_input[0]  # Get first tensor from list
+            last_input = hidden[n_generated - 1]  # This gets us a list
+
+            # Extract the actual tensor from the nested structure
+            if isinstance(last_input, list) and len(last_input) > 0:
+                # Get the first tuple from the list
+                first_tuple = last_input[0]
+
+                # Get the last tensor from the tuple (assuming it's the output tensor)
+                if isinstance(first_tuple, tuple):
+                    all_tensors = []
+                    # Collect all tensors from the tuple
+                    for item in first_tuple:
+                        if isinstance(item, torch.Tensor):
+                            all_tensors.append(item)
+                    if all_tensors:
+                        tensor = all_tensors[-1]  # Take the last tensor
+                    else:
+                        raise ValueError("No tensors found in tuple")
+                else:
+                    tensor = first_tuple
+
             else:
                 tensor = last_input
-                
+
             # Get embedding
             if isinstance(tensor, torch.Tensor):
-                last_token_embedding = tensor[0, -1, :].cpu()  # Add batch dimension handling
+                last_token_embedding = tensor[
+                    0, -1, :
+                ].cpu()  # Add batch dimension handling
             else:
                 raise ValueError(f"Unexpected tensor type: {type(tensor)}")
-                
+
         except Exception as e:
             logging.error(f"Error processing hidden states: {str(e)}")
             logging.error(f"Hidden type: {type(hidden)}")
             logging.error(f"Last input type: {type(last_input)}")
+            if isinstance(last_input, list) and len(last_input) > 0:
+                logging.error(f"First element type: {type(last_input[0])}")
+                if isinstance(last_input[0], tuple):
+                    logging.error(f"Tuple length: {len(last_input[0])}")
+                    logging.error(
+                        f"Tuple element types: {[type(x) for x in last_input[0]]}"
+                    )
             raise
 
         # Compute transition scores exactly like HuggingFaceModel
