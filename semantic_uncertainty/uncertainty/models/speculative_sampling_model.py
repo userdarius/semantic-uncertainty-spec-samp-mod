@@ -223,34 +223,41 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         if len(hidden) == 1:
             logging.warning(
                 "Taking first and only generation for hidden! "
-                "n_generated: %d, n_input_token: %d, token_stop_index %d, "
-                "last_token: %s, generation was: %s",
+                "n_generated: %d, n_input_token: %d, token_stop_index %d",
                 n_generated,
                 n_input_tokens,
                 token_stop_index,
-                self.tokenizer.decode(outputs.sequences[0][-1]),
-                full_answer,
             )
             last_input = hidden[0]
         elif (n_generated - 1) >= len(hidden):
             logging.error(
                 "Taking last state because n_generated is too large "
-                "n_generated: %d, n_input_token: %d, token_stop_index %d, "
-                "last_token: %s, generation was: %s, slice_answer: %s",
+                "n_generated: %d, n_input_token: %d, token_stop_index %d",
                 n_generated,
                 n_input_tokens,
                 token_stop_index,
-                self.tokenizer.decode(outputs.sequences[0][-1]),
-                full_answer,
-                sliced_answer,
             )
             last_input = hidden[-1]
         else:
             last_input = hidden[n_generated - 1]
 
-        # Get embeddings exactly like HuggingFaceModel
-        last_layer = last_input[-1]
-        last_token_embedding = last_layer[:, -1, :].cpu()
+        # Modified part for handling tuple structure
+        try:
+            if isinstance(last_input, tuple):
+                # Get the last layer from the tuple structure
+                last_layer = last_input[-1][
+                    -1
+                ]  # Access the last element of the last tuple
+            else:
+                last_layer = last_input[-1]
+
+            # Then get the last token embedding
+            last_token_embedding = last_layer[:, -1, :].cpu()
+        except Exception as e:
+            logging.error(f"Error processing hidden states: {str(e)}")
+            logging.error(f"last_input type: {type(last_input)}")
+            logging.error(f"last_input structure: {last_input}")
+            raise
 
         # Compute transition scores exactly like HuggingFaceModel
         transition_scores = self.compute_transition_scores(
