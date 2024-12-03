@@ -251,15 +251,21 @@ class SpeculativeSamplingModel(HuggingfaceModel):
                         target_model_cache._prob_history[:, n, :]
                         - approx_model_cache._prob_history[:, n, :]
                     )
-                )
+                ).to(
+                    self.device
+                )  # Ensure tensor is on correct device
                 target_model_cache.rollback(n + 1)
             else:
                 # All accepted, sample from target
-                t = sample(target_model_cache._prob_history[:, -1, :])
+                t = sample(target_model_cache._prob_history[:, -1, :]).to(
+                    self.device
+                )  # Ensure tensor is on correct device
                 target_model_cache.rollback(n + 2)
 
-            outputs.sequences = torch.cat((outputs.sequences, t), dim=1)
-
+            # Ensure both tensors are on the same device before concatenation
+            outputs.sequences = torch.cat(
+                (outputs.sequences.to(self.device), t.to(self.device)), dim=1
+            )
             # Store hidden states and scores
             outputs.hidden_states = outputs.hidden_states + [
                 target_model_cache._past_key_values
@@ -280,7 +286,9 @@ class SpeculativeSamplingModel(HuggingfaceModel):
 
         # Decode full answer
 
-        full_answer = self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+        full_answer = self.tokenizer.decode(
+            outputs.sequences[0], skip_special_tokens=True
+        )
         logging.info("Full generated text: %s", full_answer)
 
         if return_full:
@@ -301,7 +309,9 @@ class SpeculativeSamplingModel(HuggingfaceModel):
                         input_data_offset = full_answer.find(line)
                         break
                 else:
-                    raise ValueError(f"Cannot find answer content in text: {full_answer}")
+                    raise ValueError(
+                        f"Cannot find answer content in text: {full_answer}"
+                    )
             logging.info("Found answer at offset: %d", input_data_offset)
 
         # Extract answer portion and handle stop sequences
@@ -406,7 +416,9 @@ class SpeculativeSamplingModel(HuggingfaceModel):
             logging.error("Error processing hidden states: %s", str(e))
             logging.error("Hidden type: %s", type(hidden))
             logging.error(
-                "Hidden states info: length=%d, n_generated=%d", len(hidden), n_generated
+                "Hidden states info: length=%d, n_generated=%d",
+                len(hidden),
+                n_generated,
             )
             raise
 

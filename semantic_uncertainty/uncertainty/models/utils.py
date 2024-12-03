@@ -53,37 +53,26 @@ def norm_logits(
 def sample(probs: torch.Tensor, num_samples: int = 1):
     """Sample from probability distribution with validation."""
     try:
-        # Check for valid probability distribution
+        device = probs.device  # Get device from input tensor
         if torch.isnan(probs).any():
             raise ValueError("NaN values in probability distribution")
-
         if (probs == 0).all():
             raise ValueError("All zero probability distribution")
 
-        sum_probs = probs.sum(dim=1)
-        if not torch.allclose(sum_probs, torch.ones_like(sum_probs), rtol=1e-5):
-            raise ValueError(f"Probabilities don't sum to 1: {sum_probs.item()}")
-
         idx_next = torch.multinomial(probs, num_samples=num_samples)
-
         if idx_next.item() == 0:
-            # Instead of raising RuntimeError, try to sample again excluding 0
-            probs[:, 0] = 0  # Zero out probability of selecting 0
-            if probs.sum() > 0:  # Check if we still have valid probabilities
-                probs = probs / probs.sum()  # Renormalize
+            probs[:, 0] = 0
+            if probs.sum() > 0:
+                probs = probs / probs.sum()
                 idx_next = torch.multinomial(probs, num_samples=num_samples)
             else:
-                # If no valid probabilities left, sample from uniform distribution
-                idx_next = torch.randint(1, probs.size(-1), (1,))
+                idx_next = torch.randint(1, probs.size(-1), (1,), device=device)
 
-        return idx_next
+        return idx_next.to(device)  # Ensure output is on correct device
 
     except Exception as e:
-        logging.error("Sampling failed:")
-        logging.error(f"Probability shape: {probs.shape}")
-        logging.error(
-            f"Probability stats - min: {probs.min().item()}, max: {probs.max().item()}, sum: {probs.sum().item()}"
-        )
+        logging.error(f"Sampling failed: {str(e)}")
+        logging.error(f"Device: {probs.device}")
         raise RuntimeError(f"Sampling failed: {str(e)}")
 
 
