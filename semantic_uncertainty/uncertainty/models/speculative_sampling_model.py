@@ -223,13 +223,19 @@ class SpeculativeSamplingModel(HuggingfaceModel):
 
                 if r > target_prob / approx_prob:
                     logging.info(
-                        "Token %d rejected (Target prob: %f, Approx prob: %f)", i + 1, target_prob.item(), approx_prob.item()
+                        "Token %d rejected (Target prob: %f, Approx prob: %f)",
+                        i + 1,
+                        target_prob.item(),
+                        approx_prob.item(),
                     )
                     n = prefix_len + i - 1
                     break
                 accepted_tokens += 1
                 logging.info(
-                    "Token %d accepted (Target prob: %f, Approx prob: %f)", i + 1, target_prob.item(), approx_prob.item()
+                    "Token %d accepted (Target prob: %f, Approx prob: %f)",
+                    i + 1,
+                    target_prob.item(),
+                    approx_prob.item(),
                 )
 
             outputs.sequences = x[:, : n + 1]
@@ -268,13 +274,14 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         # Check token limit
         if len(outputs.sequences[0]) > self.token_limit:
             raise ValueError(
-                "Generation exceeding token limit %d > %d" % (len(outputs.sequences[0]), self.token_limit)
+                "Generation exceeding token limit %d > %d"
+                % (len(outputs.sequences[0]), self.token_limit)
             )
 
         # Decode full answer
-        full_answer = self.tokenizer.decode(
-            outputs.sequences[0], skip_special_tokens=True
-        )
+
+        full_answer = self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+        logging.info("Full generated text: %s", full_answer)
 
         if return_full:
             return full_answer
@@ -282,60 +289,77 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         # Process output and find correct offset
         if full_answer.startswith(input_data):
             input_data_offset = len(input_data)
+            logging.info("Using direct input offset: %d", input_data_offset)
         else:
-            logging.info("Input data: %s", input_data)
-            logging.info("Full answer: %s", full_answer)
+            # Try multiple ways to find the answer section
             content_start = full_answer.find("Answer:")
             if content_start != -1:
                 input_data_offset = content_start
-                logging.info("Found answer at offset: %d", input_data_offset)
             else:
-                raise ValueError("Cannot find answer content in generated text")
+                for line in full_answer.split("\n"):
+                    if line.strip().startswith("Answer:"):
+                        input_data_offset = full_answer.find(line)
+                        break
+                else:
+                    raise ValueError(f"Cannot find answer content in text: {full_answer}")
+            logging.info("Found answer at offset: %d", input_data_offset)
 
-        # Remove input from answer and handle stop sequences
+        # Extract answer portion and handle stop sequences
         answer = full_answer[input_data_offset:]
+        logging.info("Extracted answer portion: %s", answer)
+
         stop_at = len(answer)
         sliced_answer = answer
 
         if self.stop_sequences is not None:
             for stop in self.stop_sequences:
-                # Check for stop sequence anywhere in the text
                 stop_idx = answer.find(stop)
                 if stop_idx != -1:
                     stop_at = stop_idx
                     sliced_answer = answer[:stop_at]
                     break
-                # Check for stop sequence at the end
                 if answer.endswith(stop):
                     stop_at = len(answer) - len(stop)
                     sliced_answer = answer[:stop_at]
                     break
 
-            # Verify stop sequence removal
-            if not all([stop not in sliced_answer for stop in self.stop_sequences]):
-                error_msg = "Error: Stop words not removed successfully!"
-                error_msg += "Answer: >%s< " % answer
-                error_msg += "Sliced Answer: >%s<" % sliced_answer
-                if "falcon" not in self.model_name.lower():
-                    logging.error(error_msg)
-                else:
-                    logging.error(error_msg)
-                    return sliced_answer.strip(), [], None
-
-        # Remove whitespaces
         sliced_answer = sliced_answer.strip()
+        logging.info("Processed answer: %s", sliced_answer)
 
-        # Calculate token indices and validate
-        token_stop_index = self.tokenizer(
-            full_answer[: input_data_offset + stop_at], return_tensors="pt"
-        )["input_ids"].shape[1]
-        logging.info("Stop index tokens: %d", token_stop_index)
+        # Calculate token counts based on the actual text portions
+        input_portion = full_answer[:input_data_offset]
+        generated_portion = full_answer[input_data_offset : input_data_offset + stop_at]
 
-        n_generated = token_stop_index - n_input_tokens
+        # Get token counts for input and generated portions
+        input_tokens = self.tokenizer(
+            input_portion, return_tensors="pt", return_attention_mask=False
+        )["input_ids"]
+
+        full_tokens = self.tokenizer(
+            input_portion + generated_portion,
+            return_tensors="pt",
+            return_attention_mask=False,
+        )["input_ids"]
+
+        # Calculate the actual number of generated tokens
+        n_generated = len(full_tokens[0]) - len(input_tokens[0])
+        logging.info(
+            "Token counts - Full: %d, Input: %d, Generated: %d",
+            len(full_tokens[0]),
+            len(input_tokens[0]),
+            n_generated,
+        )
+
         if n_generated <= 0:
-            logging.error(f"Token indices: stop={token_stop_index}, input={n_input_tokens}")
-            logging.error(f"Generated text length: {len(full_answer) - input_data_offset}")
-            raise ValueError(f"Token counting error: {n_generated} tokens generated")
+            logging.error("Token counting error:")
+            logging.error("Input text: %s", input_portion)
+            logging.error("Generated text: %s", generated_portion)
+            logging.error(
+                "Token counts - Full: %d, Input: %d",
+                len(full_tokens[0]),
+                len(input_tokens[0]),
+            )
+            raise ValueError(f"Invalid token count: {n_generated} tokens generated")
 
         # Handle hidden states
         if hasattr(outputs, "decoder_hidden_states") and outputs.decoder_hidden_states:
@@ -346,50 +370,44 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         logging.info("Hidden states processing:")
         logging.info("n_generated: %d, hidden length: %d", n_generated, len(hidden))
 
+        # Process hidden states and get embedding
         try:
             if n_generated - 1 >= len(hidden):
-                logging.error(
-                    "Index out of range: trying to access index %d but hidden length is %d", 
-                    n_generated - 1, len(hidden)
+                logging.warning(
+                    "Using last hidden state (index %d > length %d)",
+                    n_generated - 1,
+                    len(hidden),
                 )
                 last_input = hidden[-1]
-                logging.warning("Falling back to last available hidden state")
             else:
                 last_input = hidden[n_generated - 1]
 
-            # Extract the actual tensor from the nested structure
+            # Extract tensor from nested structure
             if isinstance(last_input, list) and len(last_input) > 0:
                 first_tuple = last_input[0]
                 if isinstance(first_tuple, tuple):
-                    all_tensors = []
-                    for item in first_tuple:
-                        if isinstance(item, torch.Tensor):
-                            all_tensors.append(item)
-                    if all_tensors:
-                        tensor = all_tensors[-1]
-                    else:
+                    all_tensors = [
+                        item for item in first_tuple if isinstance(item, torch.Tensor)
+                    ]
+                    if not all_tensors:
                         raise ValueError("No tensors found in tuple")
+                    tensor = all_tensors[-1]
                 else:
                     tensor = first_tuple
             else:
                 tensor = last_input
 
-            # Get embedding
-            if isinstance(tensor, torch.Tensor):
-                last_token_embedding = tensor[0, -1, :].cpu()
-            else:
-                raise ValueError(f"Unexpected tensor type: {type(tensor)}")
+            if not isinstance(tensor, torch.Tensor):
+                raise ValueError(f"Expected torch.Tensor, got {type(tensor)}")
+
+            last_token_embedding = tensor[0, -1, :].cpu()
 
         except Exception as e:
             logging.error("Error processing hidden states: %s", str(e))
             logging.error("Hidden type: %s", type(hidden))
-            if "last_input" in locals():
-                logging.error("Last input type: %s", type(last_input))
-            else:
-                logging.error("last_input was never assigned")
-            logging.error("Hidden states info:")
-            logging.error("- Length: %d", len(hidden))
-            logging.error("- n_generated: %d", n_generated)
+            logging.error(
+                "Hidden states info: length=%d, n_generated=%d", len(hidden), n_generated
+            )
             raise
 
         # Compute transition scores
@@ -397,16 +415,17 @@ class SpeculativeSamplingModel(HuggingfaceModel):
             outputs.sequences, outputs.scores, normalize_logits=True
         )
 
+        # Get log likelihoods
         log_likelihoods = [score.item() for score in transition_scores[0]]
         if len(log_likelihoods) == 1:
-            logging.warning("Taking first and only generation for log likelihood!")
+            logging.warning("Only one log likelihood value available")
         else:
             log_likelihoods = log_likelihoods[:n_generated]
 
-        if len(log_likelihoods) == self.max_new_tokens:
-            logging.warning("Generation interrupted by max_token limit.")
-
         if len(log_likelihoods) == 0:
             raise ValueError("No log likelihoods computed")
+
+        if len(log_likelihoods) == self.max_new_tokens:
+            logging.warning("Generation reached max_new_tokens limit")
 
         return sliced_answer, log_likelihoods, last_token_embedding
