@@ -279,20 +279,24 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         if return_full:
             return full_answer
 
-        # Process output exactly like HuggingFaceModel
+        # Process output and find correct offset
         if full_answer.startswith(input_data):
             input_data_offset = len(input_data)
         else:
-            # Find the best matching point between input and output
-            input_data_offset = 0
-            logging.warning("Generated text doesn't match input exactly - using offset 0")
+            logging.info("Input data: %s", input_data)
+            logging.info("Full answer: %s", full_answer)
+            content_start = full_answer.find("Answer:")
+            if content_start != -1:
+                input_data_offset = content_start
+                logging.info("Found answer at offset: %d", input_data_offset)
+            else:
+                raise ValueError("Cannot find answer content in generated text")
 
-        # Remove input from answer
+        # Remove input from answer and handle stop sequences
         answer = full_answer[input_data_offset:]
-
-        # Remove stop_words from answer
         stop_at = len(answer)
         sliced_answer = answer
+
         if self.stop_sequences is not None:
             for stop in self.stop_sequences:
                 # Check for stop sequence anywhere in the text
@@ -321,38 +325,33 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         # Remove whitespaces
         sliced_answer = sliced_answer.strip()
 
-        # Calculate token indices exactly like HuggingFaceModel
+        # Calculate token indices and validate
         token_stop_index = self.tokenizer(
             full_answer[: input_data_offset + stop_at], return_tensors="pt"
         )["input_ids"].shape[1]
+        logging.info("Stop index tokens: %d", token_stop_index)
+
         n_generated = token_stop_index - n_input_tokens
+        if n_generated <= 0:
+            logging.error(f"Token indices: stop={token_stop_index}, input={n_input_tokens}")
+            logging.error(f"Generated text length: {len(full_answer) - input_data_offset}")
+            raise ValueError(f"Token counting error: {n_generated} tokens generated")
 
-        if n_generated == 0:
-            logging.warning(
-                "Only stop_words were generated. For likelihoods and embeddings, taking stop word instead."
-            )
-            n_generated = 1
-
-        # Handle hidden states exactly like HuggingFaceModel
+        # Handle hidden states
         if hasattr(outputs, "decoder_hidden_states") and outputs.decoder_hidden_states:
             hidden = outputs.decoder_hidden_states
         else:
             hidden = outputs.hidden_states
 
-        # Debug logging for hidden states
         logging.info("Hidden states processing:")
         logging.info("n_generated: %d, hidden length: %d", n_generated, len(hidden))
 
         try:
-            if n_generated <= 0:
-                logging.error("Invalid n_generated value: %d", n_generated)
-                raise ValueError("n_generated must be positive, got %d" % n_generated)
-
             if n_generated - 1 >= len(hidden):
                 logging.error(
-                    "Index out of range: trying to access index %d but hidden length is %d", n_generated - 1, len(hidden)
+                    "Index out of range: trying to access index %d but hidden length is %d", 
+                    n_generated - 1, len(hidden)
                 )
-                # Fallback to last available hidden state
                 last_input = hidden[-1]
                 logging.warning("Falling back to last available hidden state")
             else:
@@ -360,18 +359,14 @@ class SpeculativeSamplingModel(HuggingfaceModel):
 
             # Extract the actual tensor from the nested structure
             if isinstance(last_input, list) and len(last_input) > 0:
-                # Get the first tuple from the list
                 first_tuple = last_input[0]
-
-                # Get the last tensor from the tuple (assuming it's the output tensor)
                 if isinstance(first_tuple, tuple):
                     all_tensors = []
-                    # Collect all tensors from the tuple
                     for item in first_tuple:
                         if isinstance(item, torch.Tensor):
                             all_tensors.append(item)
                     if all_tensors:
-                        tensor = all_tensors[-1]  # Take the last tensor
+                        tensor = all_tensors[-1]
                     else:
                         raise ValueError("No tensors found in tuple")
                 else:
@@ -381,11 +376,9 @@ class SpeculativeSamplingModel(HuggingfaceModel):
 
             # Get embedding
             if isinstance(tensor, torch.Tensor):
-                last_token_embedding = tensor[
-                    0, -1, :
-                ].cpu()  # Add batch dimension handling
+                last_token_embedding = tensor[0, -1, :].cpu()
             else:
-                raise ValueError("Unexpected tensor type: %s" % type(tensor))
+                raise ValueError(f"Unexpected tensor type: {type(tensor)}")
 
         except Exception as e:
             logging.error("Error processing hidden states: %s", str(e))
@@ -399,7 +392,7 @@ class SpeculativeSamplingModel(HuggingfaceModel):
             logging.error("- n_generated: %d", n_generated)
             raise
 
-        # Compute transition scores exactly like HuggingFaceModel
+        # Compute transition scores
         transition_scores = self.compute_transition_scores(
             outputs.sequences, outputs.scores, normalize_logits=True
         )
