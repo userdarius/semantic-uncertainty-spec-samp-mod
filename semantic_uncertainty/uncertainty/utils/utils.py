@@ -87,7 +87,7 @@ def get_parser(stages=["generate", "compute"]):
         parser.add_argument(
             "--num_few_shot",
             type=int,
-            default=20,  # Modified from 5
+            default=5,  # Modified from 5
             help="Number of few shot examples to use",
         )
         parser.add_argument(
@@ -196,7 +196,7 @@ def get_parser(stages=["generate", "compute"]):
         )
         # Modified for testing
         parser.add_argument(
-            "--num_eval_samples", type=int, default=int(1e19)
+            "--num_eval_samples", type=int, default=100
         )  # Modified from int(1e19)
         parser.add_argument(
             "--compute_predictive_entropy",

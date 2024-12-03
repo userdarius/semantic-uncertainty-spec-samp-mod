@@ -26,96 +26,109 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         max_new_tokens=20,
     ):
         # Initial setup logging
-        logging.info(f"\n{'='*50}")
+        logging.info("%s", f"\n{'='*50}")
         logging.info("Initializing SpeculativeSamplingModel:")
-        logging.info(f"Target model: {target_model_name}")
-        logging.info(f"Approximation model: {approx_model_name}")
-        logging.info(f"Max new tokens: {max_new_tokens}")
+        logging.info("Target model: %s", target_model_name)
+        logging.info("Approximation model: %s", approx_model_name)
+        logging.info("Max new tokens: %s", max_new_tokens)
 
         # Add 8-bit quantization suffix if not already present
         if not target_model_name.endswith("-8bit"):
             target_model_name += "-8bit"
             logging.info(
-                f"Added 8-bit quantization to target model: {target_model_name}"
+                "Added 8-bit quantization to target model: %s", target_model_name
             )
 
         if not approx_model_name.endswith("-8bit"):
             approx_model_name += "-8bit"
             logging.info(
-                f"Added 8-bit quantization to approximation model: {approx_model_name}"
+                "Added 8-bit quantization to approximation model: %s", approx_model_name
             )
 
         logging.info("\nInitializing target model...")
         super().__init__(target_model_name, stop_sequences, max_new_tokens)
         logging.info("\nTarget Model Architecture:")
-        logging.info(f"Model type: {type(self.model).__name__}")
+        logging.info("Model type: %s", type(self.model).__name__)
         logging.info(
-            f"Number of parameters: {sum(p.numel() for p in self.model.parameters()):,}"
+            "Number of parameters: %s", sum(p.numel() for p in self.model.parameters())
         )
         logging.info("Layer structure:")
 
         for name, module in self.model.named_children():
-            logging.info(f"  {name}: {type(module).__name__}")
+            logging.info("  %s: %s", name, type(module).__name__)
             if hasattr(module, "config"):
                 config = module.config
-                logging.info(f"    Hidden size: {config.hidden_size}")
-                logging.info(f"    Number of layers: {config.num_hidden_layers}")
+                logging.info("    Hidden size: %s", config.hidden_size)
+                logging.info("    Number of layers: %s", config.num_hidden_layers)
                 logging.info(
-                    f"    Number of attention heads: {config.num_attention_heads}"
+                    "    Number of attention heads: %s", config.num_attention_heads
                 )
-                logging.info(f"    Vocabulary size: {config.vocab_size}")
+                logging.info("    Vocabulary size: %s", config.vocab_size)
 
         logging.info("\nInitializing approximation model...")
         self.approx_model = HuggingfaceModel(
             approx_model_name, stop_sequences, max_new_tokens
         )
         logging.info("\nApproximation Model Architecture:")
-        logging.info(f"Model type: {type(self.approx_model.model).__name__}")
+        logging.info("Model type: %s", type(self.approx_model.model).__name__)
         logging.info(
-            f"Number of parameters: {sum(p.numel() for p in self.approx_model.model.parameters()):,}"
+            "Number of parameters: %s",
+            "%s" % f"{sum(p.numel() for p in self.approx_model.model.parameters()):,}",
         )
         logging.info("Layer structure:")
         for name, module in self.approx_model.model.named_children():
-            logging.info(f"  {name}: {type(module).__name__}")
+            logging.info("  %s: %s", name, type(module).__name__)
             if hasattr(module, "config"):
                 config = module.config
-                logging.info(f"    Hidden size: {config.hidden_size}")
-                logging.info(f"    Number of layers: {config.num_hidden_layers}")
+                logging.info("    Hidden size: %s", config.hidden_size)
+                logging.info("    Number of layers: %s", config.num_hidden_layers)
                 logging.info(
-                    f"    Number of attention heads: {config.num_attention_heads}"
+                    "    Number of attention heads: %s", config.num_attention_heads
                 )
-                logging.info(f"    Vocabulary size: {config.vocab_size}")
+                logging.info("    Vocabulary size: %s", config.vocab_size)
 
         # Log memory usage
         if torch.cuda.is_available():
             logging.info("\nGPU Memory Usage:")
-            logging.info(f"Allocated: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
-            logging.info(f"Cached: {torch.cuda.memory_reserved()/1024**2:.2f} MB")
+            logging.info("Allocated: %.2f MB", torch.cuda.memory_allocated() / 1024**2)
+            logging.info("Cached: %.2f MB", torch.cuda.memory_reserved() / 1024**2)
 
         self.gamma = 4
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logging.info(f"\nUsing device: {self.device}")
-        logging.info(f"Gamma (speculative tokens): {self.gamma}")
-        logging.info(f"{'='*50}\n")
+        logging.info("Using device: %s", self.device)
+        logging.info("Gamma (speculative tokens): %d", self.gamma)
+        logging.info("%s", "=" * 50 + "\n")
 
         # Log model comparison if possible
         if hasattr(self.model, "config") and hasattr(self.approx_model.model, "config"):
             target_config = self.model.config
             approx_config = self.approx_model.model.config
             logging.info("\nModel Size Comparison:")
-            logging.info(f"{'Metric':<25} {'Target':>15} {'Approximation':>15}")
-            logging.info(f"{'-'*60}")
+            logging.info("%-25s %15s %15s", "Metric", "Target", "Approximation")
+            logging.info("%s", "-" * 60)
             logging.info(
-                f"{'Hidden size':<25} {target_config.hidden_size:>15} {approx_config.hidden_size:>15}"
+                "%-25s %15s %15s",
+                "Hidden size",
+                target_config.hidden_size,
+                approx_config.hidden_size,
             )
             logging.info(
-                f"{'Number of layers':<25} {target_config.num_hidden_layers:>15} {approx_config.num_hidden_layers:>15}"
+                "%-25s %15s %15s",
+                "Number of layers",
+                target_config.num_hidden_layers,
+                approx_config.num_hidden_layers,
             )
             logging.info(
-                f"{'Attention heads':<25} {target_config.num_attention_heads:>15} {approx_config.num_attention_heads:>15}"
+                "%-25s %15s %15s",
+                "Attention heads",
+                target_config.num_attention_heads,
+                approx_config.num_attention_heads,
             )
             logging.info(
-                f"{'Vocabulary size':<25} {target_config.vocab_size:>15} {approx_config.vocab_size:>15}"
+                "%-25s %15s %15s",
+                "Vocabulary size",
+                target_config.vocab_size,
+                approx_config.vocab_size,
             )
 
     def compute_transition_scores(self, sequences, scores, normalize_logits=True):
@@ -143,14 +156,14 @@ class SpeculativeSamplingModel(HuggingfaceModel):
 
     def predict(self, input_data: str, temperature: float, return_full: bool = False):
         """Generate text using speculative sampling with same interface as HuggingFaceModel."""
-        logging.info(f"\nStarting prediction with temperature {temperature}")
-        logging.info(f"Input length: {len(input_data)} characters")
+        logging.info("Starting prediction with temperature %s", temperature)
+        logging.info("Input length: %d characters", len(input_data))
 
         # Tokenize input
         inputs = self.tokenizer(input_data, return_tensors="pt").to("cuda")
         input_ids = inputs["input_ids"]
         n_input_tokens = input_ids.size(1)
-        logging.info(f"Input tokens: {n_input_tokens}")
+        logging.info("Input tokens: %d", n_input_tokens)
 
         # Setup pad token id like HuggingFaceModel
         if (
@@ -186,13 +199,13 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         while outputs.sequences.shape[1] < n_input_tokens + self.max_new_tokens:
             generation_step += 1
             prefix_len = outputs.sequences.shape[1]
-            logging.info(f"\nGeneration step {generation_step}:")
-            logging.info(f"Current sequence length: {prefix_len}")
+            logging.info("Generation step %d:", generation_step)
+            logging.info("Current sequence length: %d", prefix_len)
 
             # Generate from approx model
             logging.info("Generating from approximation model...")
             x = approx_model_cache.generate(outputs.sequences, self.gamma)
-            logging.info(f"Approximation model generated {self.gamma} tokens")
+            logging.info("Approximation model generated %d tokens", self.gamma)
 
             # Get target model probabilities
             logging.info("Getting target model probabilities...")
@@ -210,19 +223,19 @@ class SpeculativeSamplingModel(HuggingfaceModel):
 
                 if r > target_prob / approx_prob:
                     logging.info(
-                        f"Token {i+1} rejected (Target prob: {target_prob.item():.4f}, Approx prob: {approx_prob.item():.4f})"
+                        "Token %d rejected (Target prob: %f, Approx prob: %f)", i + 1, target_prob.item(), approx_prob.item()
                     )
                     n = prefix_len + i - 1
                     break
                 accepted_tokens += 1
                 logging.info(
-                    f"Token {i+1} accepted (Target prob: {target_prob.item():.4f}, Approx prob: {approx_prob.item():.4f})"
+                    "Token %d accepted (Target prob: %f, Approx prob: %f)", i + 1, target_prob.item(), approx_prob.item()
                 )
 
             outputs.sequences = x[:, : n + 1]
             approx_model_cache.rollback(n + 1)
             logging.info(
-                f"Accepted {accepted_tokens} out of {self.gamma} proposed tokens"
+                "Accepted %d out of %d proposed tokens", accepted_tokens, self.gamma
             )
 
             if n < prefix_len + self.gamma - 1:
@@ -255,7 +268,7 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         # Check token limit
         if len(outputs.sequences[0]) > self.token_limit:
             raise ValueError(
-                f"Generation exceeding token limit {len(outputs.sequences[0])} > {self.token_limit}"
+                "Generation exceeding token limit %d > %d" % (len(outputs.sequences[0]), self.token_limit)
             )
 
         # Decode full answer
@@ -295,8 +308,8 @@ class SpeculativeSamplingModel(HuggingfaceModel):
             # Verify stop sequence removal
             if not all([stop not in sliced_answer for stop in self.stop_sequences]):
                 error_msg = "Error: Stop words not removed successfully!"
-                error_msg += f"Answer: >{answer}< "
-                error_msg += f"Sliced Answer: >{sliced_answer}<"
+                error_msg += "Answer: >%s< " % answer
+                error_msg += "Sliced Answer: >%s<" % sliced_answer
                 if "falcon" not in self.model_name.lower():
                     logging.error(error_msg)
                 else:
@@ -325,17 +338,17 @@ class SpeculativeSamplingModel(HuggingfaceModel):
             hidden = outputs.hidden_states
 
         # Debug logging for hidden states
-        logging.info(f"Hidden states processing:")
-        logging.info(f"n_generated: {n_generated}, hidden length: {len(hidden)}")
+        logging.info("Hidden states processing:")
+        logging.info("n_generated: %d, hidden length: %d", n_generated, len(hidden))
 
         try:
             if n_generated <= 0:
-                logging.error(f"Invalid n_generated value: {n_generated}")
-                raise ValueError(f"n_generated must be positive, got {n_generated}")
+                logging.error("Invalid n_generated value: %d", n_generated)
+                raise ValueError("n_generated must be positive, got %d" % n_generated)
 
             if n_generated - 1 >= len(hidden):
                 logging.error(
-                    f"Index out of range: trying to access index {n_generated - 1} but hidden length is {len(hidden)}"
+                    "Index out of range: trying to access index %d but hidden length is %d", n_generated - 1, len(hidden)
                 )
                 # Fallback to last available hidden state
                 last_input = hidden[-1]
@@ -370,18 +383,18 @@ class SpeculativeSamplingModel(HuggingfaceModel):
                     0, -1, :
                 ].cpu()  # Add batch dimension handling
             else:
-                raise ValueError(f"Unexpected tensor type: {type(tensor)}")
+                raise ValueError("Unexpected tensor type: %s" % type(tensor))
 
         except Exception as e:
-            logging.error(f"Error processing hidden states: {str(e)}")
-            logging.error(f"Hidden type: {type(hidden)}")
+            logging.error("Error processing hidden states: %s", str(e))
+            logging.error("Hidden type: %s", type(hidden))
             if "last_input" in locals():
-                logging.error(f"Last input type: {type(last_input)}")
+                logging.error("Last input type: %s", type(last_input))
             else:
                 logging.error("last_input was never assigned")
-            logging.error(f"Hidden states info:")
-            logging.error(f"- Length: {len(hidden)}")
-            logging.error(f"- n_generated: {n_generated}")
+            logging.error("Hidden states info:")
+            logging.error("- Length: %d", len(hidden))
+            logging.error("- n_generated: %d", n_generated)
             raise
 
         # Compute transition scores exactly like HuggingFaceModel
