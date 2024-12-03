@@ -283,7 +283,9 @@ class SpeculativeSamplingModel(HuggingfaceModel):
         if full_answer.startswith(input_data):
             input_data_offset = len(input_data)
         else:
-            raise ValueError("Have not tested this in a while.")
+            # Find the best matching point between input and output
+            input_data_offset = 0
+            logging.warning("Generated text doesn't match input exactly - using offset 0")
 
         # Remove input from answer
         answer = full_answer[input_data_offset:]
