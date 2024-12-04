@@ -19,4 +19,5 @@ The installation should take around 15 minutes.
 Execute
 
 ```
-python3 semantic_uncertainty/generate_answers.py     --use_speculative_sampling     --target_model_name "Llama-2-7b-chat"     --approx_model_name "Llama-2-7b-chat"     --model_name "Llama-2-7b-chat"```
+python3 hf_login.py # for logging into huggingface quickly (currently uses my api key)
+python3 semantic_uncertainty/generate_answers.py     --use_speculative_sampling     --target_model_name "Llama-3.2-3b"     --approx_model_name "Llama-3.2-1b"     --model_name "Llama-3.2-3b"
