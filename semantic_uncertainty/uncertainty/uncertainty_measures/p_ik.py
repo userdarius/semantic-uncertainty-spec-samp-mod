@@ -15,20 +15,17 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
     logging.info("Accuracy of model on Task: %f.", 1 - torch.tensor(is_false).mean())
 
     # First, flatten each embedding separately
+   # Only use the last hidden state which should be [batch_size, hidden_dim]
     flattened_train_embeddings = []
     for emb in train_embeddings:
-        # Flatten the embedding while preserving sample identity
-        flattened_emb = emb.reshape(
-            1, -1
-        )  # Reshape to (1, -1) to keep as single sample
-        flattened_train_embeddings.append(flattened_emb)
+        flat_emb = emb[-1, :]  # Take just the last hidden state
+        flattened_train_embeddings.append(flat_emb.unsqueeze(0))
 
-    # Stack instead of concatenate
     train_embeddings_tensor = torch.vstack(flattened_train_embeddings)
     embeddings_array = train_embeddings_tensor.cpu().numpy()
 
     logging.info(
-        f"Training embeddings shape after flattening: {embeddings_array.shape}"
+        "Training embeddings shape after flattening: %s", embeddings_array.shape
     )
 
     # Train/test split
