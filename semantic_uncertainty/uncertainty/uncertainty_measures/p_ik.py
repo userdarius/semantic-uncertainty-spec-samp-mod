@@ -51,6 +51,10 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
 
     metrics, y_preds_proba = {}, {}
 
+    # Initialize base model first
+    model = LogisticRegression()
+    model.fit(X_train, y_train)
+
     for suffix, X, y_true in zip(suffixes, Xs, ys):  # pylint: disable=invalid-name
 
         # If suffix is eval, we fit a new model on the entire training data set
