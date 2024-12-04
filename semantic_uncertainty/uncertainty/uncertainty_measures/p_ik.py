@@ -14,11 +14,11 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
     """Fit linear classifier to embeddings to predict model correctness."""
     logging.info("Accuracy of model on Task: %f.", 1 - torch.tensor(is_false).mean())
 
-    # First, flatten each embedding separately
-   # Only use the last hidden state which should be [batch_size, hidden_dim]
+    # Process training embeddings
     flattened_train_embeddings = []
     for emb in train_embeddings:
-        flat_emb = emb[-1, :]  # Take just the last hidden state
+        # Take last hidden state
+        flat_emb = emb[-1, :]  # Shape should be [hidden_dim]
         flattened_train_embeddings.append(flat_emb.unsqueeze(0))
 
     train_embeddings_tensor = torch.vstack(flattened_train_embeddings)
@@ -33,13 +33,16 @@ def get_p_ik(train_embeddings, is_false, eval_embeddings=None, eval_is_false=Non
         embeddings_array, is_false, test_size=0.2, random_state=42
     )
 
-    # Process eval embeddings the same way
+    # Process eval embeddings THE SAME WAY as training
     flattened_eval_embeddings = []
     for emb in eval_embeddings:
-        flattened_eval = emb.reshape(1, -1)
-        flattened_eval_embeddings.append(flattened_eval)
+        # Take last hidden state - same as training
+        flat_emb = emb[-1, :]
+        flattened_eval_embeddings.append(flat_emb.unsqueeze(0))
 
     X_eval = torch.vstack(flattened_eval_embeddings).cpu().numpy()
+    logging.info("Eval embeddings shape after flattening: %s", X_eval.shape)
+
     y_eval = eval_is_false
 
     Xs = [X_train, X_test, X_eval]  # pylint: disable=invalid-name
