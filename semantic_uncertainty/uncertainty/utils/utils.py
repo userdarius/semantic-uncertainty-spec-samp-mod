@@ -196,7 +196,7 @@ def get_parser(stages=["generate", "compute"]):
         )
         # Modified for testing
         parser.add_argument(
-            "--num_eval_samples", type=int, default=100
+            "--num_eval_samples", type=int, default=int(1e19)
         )  # Modified from int(1e19)
         parser.add_argument(
             "--compute_predictive_entropy",
