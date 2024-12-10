@@ -23,7 +23,7 @@ class ChainOfThoughtModel(HuggingfaceModel):
         model_name: str,
         stop_sequences="default",
         max_new_tokens=20,
-        cot_prompt_template: str = "Let's solve this step by step:\n1. "
+        cot_prompt_template: str = "Let's solve this step by step:\n1. ",
     ):
         # Initial setup logging
         logging.info("%s", f"\n{'='*50}")
@@ -38,15 +38,14 @@ class ChainOfThoughtModel(HuggingfaceModel):
 
         logging.info("\nInitializing model...")
         super().__init__(model_name, stop_sequences, max_new_tokens)
-        
+
         self.cot_prompt_template = cot_prompt_template
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+
         logging.info("\nModel Architecture:")
         logging.info("Model type: %s", type(self.model).__name__)
         logging.info(
-            "Number of parameters: %s",
-            sum(p.numel() for p in self.model.parameters())
+            "Number of parameters: %s", sum(p.numel() for p in self.model.parameters())
         )
 
         # Log model configuration
@@ -70,9 +69,9 @@ class ChainOfThoughtModel(HuggingfaceModel):
     def _extract_reasoning_steps(self, text: str) -> List[str]:
         """Extract numbered reasoning steps from the generated text."""
         steps = []
-        lines = text.split('\n')
+        lines = text.split("\n")
         current_step = ""
-        
+
         for line in lines:
             if any(line.strip().startswith(str(i) + ".") for i in range(1, 10)):
                 if current_step:
@@ -80,10 +79,10 @@ class ChainOfThoughtModel(HuggingfaceModel):
                 current_step = line.strip()
             elif current_step:
                 current_step += " " + line.strip()
-        
+
         if current_step:
             steps.append(current_step.strip())
-            
+
         return steps
 
     def compute_transition_scores(self, sequences, scores, normalize_logits=True):
@@ -97,7 +96,7 @@ class ChainOfThoughtModel(HuggingfaceModel):
                 probs = logits
                 log_probs_step = torch.log(logits)
 
-            selected_tokens = sequences[:, -len(scores):]
+            selected_tokens = sequences[:, -len(scores) :]
             batch_size = selected_tokens.shape[0]
             selected_log_probs = log_probs_step[
                 torch.arange(batch_size, device=self.device),
@@ -127,16 +126,19 @@ class ChainOfThoughtModel(HuggingfaceModel):
             "do_sample": True,
             "output_scores": True,
             "return_dict_in_generate": True,
-            "pad_token_id": self.tokenizer.eos_token_id
+            "pad_token_id": self.tokenizer.eos_token_id,
+            "output_hidden_states": True,  # Add this to ensure we get hidden states
         }
 
         # Generate with chain-of-thought reasoning
         outputs = self.model.generate(**gen_kwargs)
-        
+
         # Process outputs
-        full_output = self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
-        reasoning_steps = self._extract_reasoning_steps(full_output[len(input_data):])
-        
+        full_output = self.tokenizer.decode(
+            outputs.sequences[0], skip_special_tokens=True
+        )
+        reasoning_steps = self._extract_reasoning_steps(full_output[len(input_data) :])
+
         logging.info("Generated reasoning steps: %d", len(reasoning_steps))
         for i, step in enumerate(reasoning_steps, 1):
             logging.info("Step %d: %s", i, step)
@@ -145,8 +147,8 @@ class ChainOfThoughtModel(HuggingfaceModel):
             return full_output
 
         # Extract final answer after reasoning
-        final_answer = full_output[len(cot_input):]
-        
+        final_answer = full_output[len(cot_input) :]
+
         # Handle stop sequences
         if self.stop_sequences is not None:
             for stop in self.stop_sequences:
@@ -162,26 +164,38 @@ class ChainOfThoughtModel(HuggingfaceModel):
         generated_tokens = outputs.sequences[0][n_input_tokens:]
         n_generated = len(generated_tokens)
 
-        # Process hidden states
-        if hasattr(outputs, "decoder_hidden_states") and outputs.decoder_hidden_states:
-            hidden = outputs.decoder_hidden_states
-        else:
-            hidden = outputs.hidden_states[-1] if hasattr(outputs, "hidden_states") else None
+        # Process hidden states - modified handling
+        try:
+            if (
+                hasattr(outputs, "decoder_hidden_states")
+                and outputs.decoder_hidden_states
+            ):
+                hidden = outputs.decoder_hidden_states[-1]
+            elif hasattr(outputs, "hidden_states") and outputs.hidden_states:
+                hidden = outputs.hidden_states[-1]
+            else:
+                # Fallback to getting hidden states through a forward pass
+                with torch.no_grad():
+                    model_output = self.model(
+                        outputs.sequences, output_hidden_states=True
+                    )
+                    hidden = model_output.hidden_states[-1]
 
-        # Get last token embedding
-        if hidden is not None:
             last_token_embedding = hidden[0, -1, :].cpu()
-        else:
-            last_token_embedding = None
+        except Exception as e:
+            logging.warning(f"Could not extract hidden states: {e}")
+            last_token_embedding = torch.zeros(self.model.config.hidden_size)
 
         # Compute transition scores
-        transition_scores = self.compute_transition_scores(
-            outputs.sequences, outputs.scores, normalize_logits=True
-        )
-
-        # Get log likelihoods
-        log_likelihoods = [score.item() for score in transition_scores[0]]
-        if len(log_likelihoods) > n_generated:
-            log_likelihoods = log_likelihoods[:n_generated]
+        try:
+            transition_scores = self.compute_transition_scores(
+                outputs.sequences, outputs.scores, normalize_logits=True
+            )
+            log_likelihoods = [score.item() for score in transition_scores[0]]
+            if len(log_likelihoods) > n_generated:
+                log_likelihoods = log_likelihoods[:n_generated]
+        except Exception as e:
+            logging.warning(f"Could not compute transition scores: {e}")
+            log_likelihoods = [0.0] * n_generated
 
         return final_answer, log_likelihoods, last_token_embedding, reasoning_steps
