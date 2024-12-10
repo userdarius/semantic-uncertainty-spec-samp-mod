@@ -106,96 +106,100 @@ class ChainOfThoughtModel(HuggingfaceModel):
 
         return torch.stack(log_probs).T
 
-    def predict(self, input_data: str, temperature: float, return_full: bool = False):
-        """Generate text using chain-of-thought reasoning."""
-        logging.info("Starting CoT prediction with temperature %s", temperature)
-        logging.info("Input length: %d characters", len(input_data))
 
-        # Prepare input with CoT prompt
-        cot_input = input_data + "\n" + self.cot_prompt_template
-        inputs = self.tokenizer(cot_input, return_tensors="pt").to(self.device)
-        input_ids = inputs["input_ids"]
-        n_input_tokens = input_ids.size(1)
-        logging.info("Input tokens: %d", n_input_tokens)
+def predict(self, input_data: str, temperature: float, return_full: bool = False):
+    """Generate text using chain-of-thought reasoning."""
+    logging.info("Starting CoT prediction with temperature %s", temperature)
+    logging.info("Input length: %d characters", len(input_data))
 
-        # Setup generation parameters
-        gen_kwargs = {
-            "input_ids": input_ids,
-            "max_new_tokens": self.max_new_tokens,
-            "temperature": temperature,
-            "do_sample": True,
-            "output_scores": True,
-            "return_dict_in_generate": True,
-            "pad_token_id": self.tokenizer.eos_token_id,
-            "output_hidden_states": True,  # Add this to ensure we get hidden states
-        }
+    # Prepare input with CoT prompt
+    cot_input = input_data + "\n" + self.cot_prompt_template
+    inputs = self.tokenizer(cot_input, return_tensors="pt").to(self.device)
+    input_ids = inputs["input_ids"]
+    n_input_tokens = input_ids.size(1)
+    logging.info("Input tokens: %d", n_input_tokens)
 
-        # Generate with chain-of-thought reasoning
-        outputs = self.model.generate(**gen_kwargs)
+    # Setup generation parameters
+    gen_kwargs = {
+        "input_ids": input_ids,
+        "max_new_tokens": self.max_new_tokens,
+        "temperature": temperature,
+        "do_sample": True,
+        "output_scores": True,
+        "return_dict_in_generate": True,
+        "pad_token_id": self.tokenizer.eos_token_id,
+        "output_hidden_states": True,
+    }
 
-        # Process outputs
-        full_output = self.tokenizer.decode(
-            outputs.sequences[0], skip_special_tokens=True
+    # Generate with chain-of-thought reasoning
+    outputs = self.model.generate(**gen_kwargs)
+
+    # Process outputs
+    full_output = self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+    reasoning_steps = self._extract_reasoning_steps(full_output[len(input_data) :])
+
+    logging.info("Generated reasoning steps: %d", len(reasoning_steps))
+    for i, step in enumerate(reasoning_steps, 1):
+        logging.info("Step %d: %s", i, step)
+
+    if return_full:
+        return full_output
+
+    # Extract final answer after reasoning
+    final_answer = full_output[len(cot_input) :]
+
+    # Handle stop sequences
+    if self.stop_sequences is not None:
+        for stop in self.stop_sequences:
+            stop_idx = final_answer.find(stop)
+            if stop_idx != -1:
+                final_answer = final_answer[:stop_idx]
+                break
+
+    final_answer = final_answer.strip()
+    logging.info("Final processed answer: %s", final_answer)
+
+    # Calculate token counts
+    generated_tokens = outputs.sequences[0][n_input_tokens:]
+    n_generated = len(generated_tokens)
+
+    # Process hidden states - modified handling
+    try:
+        if hasattr(outputs, "decoder_hidden_states") and outputs.decoder_hidden_states:
+            hidden = outputs.decoder_hidden_states[-1]
+        elif hasattr(outputs, "hidden_states") and outputs.hidden_states:
+            # Ensure we're getting the last layer's hidden states
+            hidden = outputs.hidden_states[-1][-1]  # Get the last layer's last state
+        else:
+            # Fallback to getting hidden states through a forward pass
+            with torch.no_grad():
+                model_output = self.model(outputs.sequences, output_hidden_states=True)
+                hidden = model_output.hidden_states[-1]
+
+        last_token_embedding = hidden[0, -1, :].cpu()
+    except Exception as e:
+        logging.warning(f"Could not extract hidden states: {e}")
+        last_token_embedding = torch.zeros(self.model.config.hidden_size)
+
+    # Compute transition scores
+    try:
+        transition_scores = self.compute_transition_scores(
+            outputs.sequences, outputs.scores, normalize_logits=True
         )
-        reasoning_steps = self._extract_reasoning_steps(full_output[len(input_data) :])
+        log_likelihoods = [score.item() for score in transition_scores[0]]
+        if len(log_likelihoods) > n_generated:
+            log_likelihoods = log_likelihoods[:n_generated]
+    except Exception as e:
+        logging.warning(f"Could not compute transition scores: {e}")
+        log_likelihoods = [0.0] * n_generated
 
-        logging.info("Generated reasoning steps: %d", len(reasoning_steps))
-        for i, step in enumerate(reasoning_steps, 1):
-            logging.info("Step %d: %s", i, step)
+    # Store reasoning steps in instance variable if needed later
+    self.last_reasoning_steps = reasoning_steps
 
-        if return_full:
-            return full_output
+    # Return only the three expected values for compatibility
+    return final_answer, log_likelihoods, last_token_embedding
 
-        # Extract final answer after reasoning
-        final_answer = full_output[len(cot_input) :]
 
-        # Handle stop sequences
-        if self.stop_sequences is not None:
-            for stop in self.stop_sequences:
-                stop_idx = final_answer.find(stop)
-                if stop_idx != -1:
-                    final_answer = final_answer[:stop_idx]
-                    break
-
-        final_answer = final_answer.strip()
-        logging.info("Final processed answer: %s", final_answer)
-
-        # Calculate token counts
-        generated_tokens = outputs.sequences[0][n_input_tokens:]
-        n_generated = len(generated_tokens)
-
-        # Process hidden states - modified handling
-        try:
-            if (
-                hasattr(outputs, "decoder_hidden_states")
-                and outputs.decoder_hidden_states
-            ):
-                hidden = outputs.decoder_hidden_states[-1]
-            elif hasattr(outputs, "hidden_states") and outputs.hidden_states:
-                hidden = outputs.hidden_states[-1]
-            else:
-                # Fallback to getting hidden states through a forward pass
-                with torch.no_grad():
-                    model_output = self.model(
-                        outputs.sequences, output_hidden_states=True
-                    )
-                    hidden = model_output.hidden_states[-1]
-
-            last_token_embedding = hidden[0, -1, :].cpu()
-        except Exception as e:
-            logging.warning(f"Could not extract hidden states: {e}")
-            last_token_embedding = torch.zeros(self.model.config.hidden_size)
-
-        # Compute transition scores
-        try:
-            transition_scores = self.compute_transition_scores(
-                outputs.sequences, outputs.scores, normalize_logits=True
-            )
-            log_likelihoods = [score.item() for score in transition_scores[0]]
-            if len(log_likelihoods) > n_generated:
-                log_likelihoods = log_likelihoods[:n_generated]
-        except Exception as e:
-            logging.warning(f"Could not compute transition scores: {e}")
-            log_likelihoods = [0.0] * n_generated
-
-        return final_answer, log_likelihoods, last_token_embedding, reasoning_steps
+def get_last_reasoning_steps(self):
+    """Get the reasoning steps from the last prediction."""
+    return getattr(self, "last_reasoning_steps", None)
