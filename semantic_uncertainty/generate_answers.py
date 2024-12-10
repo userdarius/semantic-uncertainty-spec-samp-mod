@@ -20,12 +20,13 @@ utils.setup_logger()
 
 def process_model_output(output, has_cot=False):
     """Process model output based on whether it's from CoT or standard generation."""
-    if has_cot:
-        predicted_answer, token_log_likelihoods, embedding, reasoning_steps = output
-        return predicted_answer, token_log_likelihoods, embedding, reasoning_steps
-    else:
+    if len(output) == 4 and has_cot:  # CoT output
+        return output
+    elif len(output) == 3:  # Standard output
         predicted_answer, token_log_likelihoods, embedding = output
         return predicted_answer, token_log_likelihoods, embedding, None
+    else:
+        raise ValueError(f"Unexpected output format: got {len(output)} values")
 
 
 def main(args):
