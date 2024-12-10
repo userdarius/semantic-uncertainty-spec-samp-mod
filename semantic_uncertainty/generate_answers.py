@@ -1,4 +1,4 @@
-"""Sample answers from LLMs on QA task."""
+"""Sample answers from LLMs on QA task with Chain of Thought support."""
 import gc
 import os
 import logging
@@ -18,8 +18,17 @@ from compute_uncertainty_measures import main as main_compute
 utils.setup_logger()
 
 
-def main(args):
+def process_model_output(output, has_cot=False):
+    """Process model output based on whether it's from CoT or standard generation."""
+    if has_cot:
+        predicted_answer, token_log_likelihoods, embedding, reasoning_steps = output
+        return predicted_answer, token_log_likelihoods, embedding, reasoning_steps
+    else:
+        predicted_answer, token_log_likelihoods, embedding = output
+        return predicted_answer, token_log_likelihoods, embedding, None
 
+
+def main(args):
     # Setup run.
     if args.dataset == 'svamp':
         if not args.use_context:
@@ -57,7 +66,6 @@ def main(args):
         logging.warning(
             'Using OOD dataset %s to construct few-shot prompts and train p_ik.',
             args.ood_train_dataset)
-        # Get indices of answerable and unanswerable questions and construct prompt.
         train_dataset, _ = load_ds(args.ood_train_dataset, add_options=args.use_mc_options)
     if not isinstance(train_dataset, list):
         logging.info('Train dataset: %s', train_dataset)
@@ -77,7 +85,7 @@ def main(args):
 
     # Create Few-Shot prompt.
     make_prompt = utils.get_make_prompt(args)
-    BRIEF = utils.BRIEF_PROMPTS[args.brief_prompt]
+    BRIEF = utils.BRIEF_PROMPTS["cot" if args.use_chain_of_thought else args.brief_prompt]
     arg = args.brief_always if args.enable_brief else True
     prompt = utils.construct_fewshot_prompt_from_indices(
         train_dataset, prompt_indices, BRIEF, arg, make_prompt)
@@ -116,6 +124,9 @@ def main(args):
     logging.info(80 * '=')
     logging.info('Generating answers: ')
     logging.info(80 * '=')
+    
+    has_cot = args.use_chain_of_thought
+    
     for dataset_split in ['train', 'validation']:
         logging.info(80 * 'x')
         logging.info('Starting with dataset_split %s.', dataset_split)
@@ -130,7 +141,6 @@ def main(args):
                 continue
             dataset = train_dataset
             possible_indices = list(set(remaining_answerable) | set(unanswerable_indices))
-
         else:
             dataset = validation_dataset
             possible_indices = range(0, len(dataset))
@@ -163,22 +173,18 @@ def main(args):
 
             full_responses = []
 
-            # We sample one low temperature answer on which we will compute the
-            # accuracy and args.num_generation high temperature answers which will
-            # be used to estimate the entropy variants.
-
             if dataset_split == 'train' and args.get_training_set_generations_most_likely_only:
                 num_generations = 1
             else:
                 num_generations = args.num_generations + 1
 
             for i in range(num_generations):
-
                 # Temperature for first generation is always `0.1`.
                 temperature = 0.1 if i == 0 else args.temperature
 
-                predicted_answer, token_log_likelihoods, embedding = model.predict(
-                    local_prompt, temperature)
+                # Get model predictions with CoT support
+                output = model.predict(local_prompt, temperature)
+                predicted_answer, token_log_likelihoods, embedding, reasoning_steps = process_model_output(output, has_cot)
                 embedding = embedding.cpu() if embedding is not None else None
 
                 # Only compute accuracy if question is answerable.
@@ -186,13 +192,17 @@ def main(args):
                 if correct_answer and compute_acc:
                     acc = metric(predicted_answer, example, model)
                 else:
-                    acc = 0.0  # pylint: disable=invalid-name
+                    acc = 0.0
 
                 if i == 0:
                     logging.info('Iteration ' + str(it) + ':  ' + 80*'#')
                     if args.use_context:
                         logging.info('context: '.ljust(15) + str(context))
                     logging.info('question: '.ljust(15) + question)
+                    if has_cot and reasoning_steps:
+                        logging.info('reasoning steps:')
+                        for step_idx, step in enumerate(reasoning_steps, 1):
+                            logging.info(f'{step_idx}. {step}')
                     logging.info('low-t prediction: '.ljust(15) + predicted_answer)
                     logging.info('correct answer: '.ljust(15) + str(correct_answer))
                     logging.info('accuracy: '.ljust(15) + str(acc))
@@ -202,16 +212,26 @@ def main(args):
                         'response': predicted_answer,
                         'token_log_likelihoods': token_log_likelihoods,
                         'embedding': embedding,
-                        'accuracy': acc}
+                        'accuracy': acc
+                    }
+                    if has_cot:
+                        most_likely_answer_dict['reasoning_steps'] = reasoning_steps
+                    
                     generations[example['id']].update({
                         'most_likely_answer': most_likely_answer_dict,
                         'reference': utils.get_reference(example)})
 
                 else:
                     logging.info('high-t prediction '.ljust(15) + str(i) + ' : ' + predicted_answer)
-                    # Aggregate predictions over num_generations.
-                    full_responses.append(
-                        (predicted_answer, token_log_likelihoods, embedding, acc))
+                    if has_cot and reasoning_steps:
+                        for step_idx, step in enumerate(reasoning_steps, 1):
+                            logging.info(f'reasoning step {step_idx}: {step}')
+                    
+                    # Store response with reasoning steps if available
+                    response_tuple = (predicted_answer, token_log_likelihoods, embedding, acc)
+                    if has_cot:
+                        response_tuple += (reasoning_steps,)
+                    full_responses.append(response_tuple)
 
             # Append all predictions for this example to `generations`.
             generations[example['id']]['responses'] = full_responses
@@ -247,7 +267,6 @@ def main(args):
 
 
 if __name__ == '__main__':
-
     parser = utils.get_parser()
     args, unknown = parser.parse_known_args()
     logging.info('Starting new run with args: %s', args)

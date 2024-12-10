@@ -12,10 +12,12 @@ from evaluate import load
 from uncertainty.models.huggingface_models import HuggingfaceModel
 from uncertainty.utils import openai as oai
 from uncertainty.models.speculative_sampling_model import SpeculativeSamplingModel
+from uncertainty.models.chain_of_thought_model import ChainOfThoughtModel
 
 BRIEF_PROMPTS = {
     "default": "Answer the following question as briefly as possible.\n",
     "chat": "Answer the following question in a single brief but complete sentence.\n",
+    "cot": "Let's solve this step by step, then provide a brief final answer.\n",  # Added CoT prompt
 }
 
 
@@ -178,6 +180,24 @@ def get_parser(stages=["generate", "compute"]):
             default="Llama-2-7b-chat",
             help="Approximate model name",
         )
+        parser.add_argument(
+            "--use_chain_of_thought",
+            default=False,
+            action=argparse.BooleanOptionalAction,
+            help="Use Chain of Thought decoding",
+        )
+        parser.add_argument(
+            "--cot_prompt_template",
+            type=str,
+            default="Let's solve this step by step:\n1. ",
+            help="Template for Chain of Thought prompting",
+        )
+        parser.add_argument(
+            "--save_reasoning_steps",
+            default=True,
+            action=argparse.BooleanOptionalAction,
+            help="Save intermediate reasoning steps from CoT",
+        )
 
     if "compute" in stages:
         parser.add_argument(
@@ -258,6 +278,18 @@ def get_parser(stages=["generate", "compute"]):
             default=False,
             action=argparse.BooleanOptionalAction,
             help="Use entailment model as p_true model.",
+        )
+        parser.add_argument(
+            "--analyze_reasoning_steps",
+            default=True,
+            action=argparse.BooleanOptionalAction,
+            help="Analyze intermediate reasoning steps from CoT",
+        )
+        parser.add_argument(
+            "--reasoning_depth_limit",
+            type=int,
+            default=5,
+            help="Maximum number of reasoning steps to consider",
         )
     return parser
 
@@ -398,7 +430,14 @@ def get_reference(example):
 
 def init_model(args):
     mn = args.model_name
-    if args.use_speculative_sampling:
+    if args.use_chain_of_thought:
+        model = ChainOfThoughtModel(
+            mn,
+            stop_sequences="default",
+            max_new_tokens=args.model_max_new_tokens,
+            cot_prompt_template=args.cot_prompt_template,
+        )
+    elif args.use_speculative_sampling:
         model = SpeculativeSamplingModel(
             args.target_model_name,
             args.approx_model_name,
@@ -425,9 +464,23 @@ def get_make_prompt(args):
                 prompt += f"Context: {context}\n"
             prompt += f"Question: {question}\n"
             if answer:
-                prompt += f"Answer: {answer}\n\n"
+                if args.use_chain_of_thought:
+                    # For CoT, include reasoning steps if available
+                    if isinstance(answer, tuple) and len(answer) == 2:
+                        steps, final_answer = answer
+                        prompt += "Reasoning:\n"
+                        for i, step in enumerate(steps, 1):
+                            prompt += f"{i}. {step}\n"
+                        prompt += f"Final Answer: {final_answer}\n\n"
+                    else:
+                        prompt += f"Answer: {answer}\n\n"
+                else:
+                    prompt += f"Answer: {answer}\n\n"
             else:
-                prompt += "Answer:"
+                if args.use_chain_of_thought:
+                    prompt += "Let's solve this step by step:\n1. "
+                else:
+                    prompt += "Answer:"
             return prompt
 
     else:
@@ -437,21 +490,42 @@ def get_make_prompt(args):
 
 
 def get_metric(metric):
-    if metric == "squad":
+    """Get appropriate metric function with Chain of Thought support.
 
+    Args:
+        metric (str): Metric type to use ("squad", "llm", "llm_gpt-3.5", "llm_gpt-4")
+
+    Returns:
+        callable: Metric function that handles both standard and CoT outputs
+    """
+    if metric == "squad":
         squad_metric = load("squad_v2")
 
-        def metric(response, example, *args, **kwargs):
-            # Compatibility with recomputation.
+        def metric(predicted_answer, example, *args, **kwargs):
+            # Handle CoT output structure (final_answer, reasoning_steps, embeddings)
+            if isinstance(predicted_answer, tuple):
+                if len(predicted_answer) >= 3:  # Has embeddings
+                    final_answer = predicted_answer[0]
+                elif len(predicted_answer) == 2:  # Just answer and reasoning
+                    final_answer = predicted_answer[0]
+                else:
+                    raise ValueError(
+                        f"Unexpected CoT output structure: {predicted_answer}"
+                    )
+            else:
+                final_answer = predicted_answer
+
+            # Get example ID using existing logic
             if "id" in example:
                 exid = example["id"]
             elif "id" in example["reference"]:
                 exid = example["reference"]["id"]
             else:
-                raise ValueError
+                raise ValueError("No ID found in example or reference")
 
+            # Format prediction and compute metric
             prediction = {
-                "prediction_text": response,
+                "prediction_text": final_answer,
                 "no_answer_probability": 0.0,
                 "id": exid,
             }
@@ -460,20 +534,85 @@ def get_metric(metric):
             )
             return 1.0 if (results["f1"] >= 50.0) else 0.0
 
-    # Reuses the globally active model for these.
     elif metric == "llm":
-        metric = llm_metric
-    elif metric == "llm_gpt-3.5":
-        metric = get_gpt_metric(metric)
-    elif metric == "llm_gpt-4":
-        metric = get_gpt_metric(metric)
+
+        def metric(predicted_answer, example, model):
+            # Handle CoT output structure
+            if isinstance(predicted_answer, tuple):
+                if len(predicted_answer) >= 3:  # Has embeddings
+                    final_answer, reasoning_steps, _ = predicted_answer[:3]
+                elif len(predicted_answer) == 2:  # Just answer and reasoning
+                    final_answer, reasoning_steps = predicted_answer
+                else:
+                    raise ValueError(
+                        f"Unexpected CoT output structure: {predicted_answer}"
+                    )
+
+                # Store reasoning steps in example if needed
+                if (
+                    hasattr(model, "save_reasoning_steps")
+                    and model.save_reasoning_steps
+                ):
+                    example["reasoning_steps"] = reasoning_steps
+            else:
+                final_answer = predicted_answer
+
+            return model_based_metric(final_answer, example, model)
+
+    # Handle GPT-based metrics
+    elif metric in ["llm_gpt-3.5", "llm_gpt-4"]:
+        gpt_base_metric = get_gpt_metric(metric)
+
+        def metric(predicted_answer, example, model):
+            # Handle CoT output structure
+            if isinstance(predicted_answer, tuple):
+                if len(predicted_answer) >= 3:  # Has embeddings
+                    final_answer = predicted_answer[0]
+                elif len(predicted_answer) == 2:  # Just answer and reasoning
+                    final_answer = predicted_answer[0]
+                else:
+                    raise ValueError(
+                        f"Unexpected CoT output structure: {predicted_answer}"
+                    )
+            else:
+                final_answer = predicted_answer
+
+            return gpt_base_metric(final_answer, example, model)
+
     else:
-        raise ValueError
+        raise ValueError(f"Unknown metric type: {metric}")
 
     return metric
 
 
 def save(object, file):
+    if isinstance(object, dict) and "reasoning_steps" in object:
+        # Separate reasoning steps and final answers for analysis
+        reasoning_data = {
+            "steps": object["reasoning_steps"],
+            "final_answers": object.get("final_answers", []),
+            "step_confidences": object.get("step_confidences", []),
+        }
+        base_name = file.rsplit(".", 1)[0]
+        reasoning_file = f"{base_name}_reasoning.pkl"
+
+        # Save reasoning data separately
+        with open(f"{wandb.run.dir}/{reasoning_file}", "wb") as f:
+            pickle.dump(reasoning_data, f)
+        wandb.save(f"{wandb.run.dir}/{reasoning_file}")
+
+    # Save the main object
     with open(f"{wandb.run.dir}/{file}", "wb") as f:
         pickle.dump(object, f)
     wandb.save(f"{wandb.run.dir}/{file}")
+
+
+def process_cot_output(response, example, model):
+    """Process Chain of Thought output for metrics."""
+    if isinstance(response, tuple) and len(response) == 2:
+        final_answer, reasoning_steps = response
+        # Log reasoning steps if requested
+        if hasattr(model, "save_reasoning_steps") and model.save_reasoning_steps:
+            example["reasoning_steps"] = reasoning_steps
+        return final_answer
+    return response
