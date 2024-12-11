@@ -181,14 +181,19 @@ class ChainOfThoughtModel(HuggingfaceModel):
         if hasattr(follow_up_out, "hidden_states"):
             # Handle tuple of hidden states correctly
             hidden_states = follow_up_out.hidden_states
-            if isinstance(hidden_states, tuple):
-                # Get last layer's hidden states
-                last_layer_hidden = hidden_states[-1]
-                # Get last token embedding from last layer
-                last_token_embedding = last_layer_hidden[0, -1, :].cpu()
-            else:
-                # If hidden_states is not a tuple (direct tensor)
-                last_token_embedding = hidden_states[0, -1, :].cpu()
+            try:
+                if isinstance(hidden_states, tuple):
+                    # For tuple of tuples structure
+                    last_layer_hidden = hidden_states[-1][-1]  # Get last layer state
+                    if isinstance(last_layer_hidden, tuple):
+                        last_layer_hidden = last_layer_hidden[-1]  # Get final state if nested
+                    last_token_embedding = last_layer_hidden[0, -1, :].cpu()
+                else:
+                    # If hidden_states is directly a tensor
+                    last_token_embedding = hidden_states[0, -1, :].cpu()
+            except Exception as e:
+                logging.warning(f"Error extracting hidden states: {e}")
+                last_token_embedding = torch.zeros(self.model.config.hidden_size)
         else:
             last_token_embedding = torch.zeros(self.model.config.hidden_size)
 
