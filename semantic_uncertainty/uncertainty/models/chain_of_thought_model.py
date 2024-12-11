@@ -342,9 +342,13 @@ class ChainOfThoughtModel(HuggingfaceModel):
         logging.info("Starting CoT prediction with temperature %s", temperature)
         logging.info("Input length: %d characters", len(input_data))
 
-        # Properly format input to encourage step-by-step reasoning
+        # Enhanced prompt while keeping the CoT format
         if "Question:" not in input_data and "Q:" not in input_data:
-            cot_input = f"Question: {input_data}\nLet's solve this step by step:\n1. "
+            cot_input = (
+                f"Question: {input_data}\n"
+                "Let's solve this step by step:\n"
+                "1. First, let's understand what we know:\n"
+            )
         else:
             cot_input = input_data
 
@@ -363,13 +367,12 @@ class ChainOfThoughtModel(HuggingfaceModel):
             "pad_token_id": self.tokenizer.eos_token_id,
             "eos_token_id": self.tokenizer.eos_token_id,
             "return_legacy_cache": True,
-            "repetition_penalty": 1.2,
+            "repetition_penalty": 1.3,
+            "min_length": n_input_tokens + 20,  # Enforce minimum generation length
             "no_repeat_ngram_size": 3,
             "top_p": 0.95 if temperature > 0 else 1.0,
             "output_hidden_states": True,
-            "temperature": max(
-                0.1, temperature
-            ),  # Prevent temperature from being too low
+            "temperature": max(0.7, temperature),  # Prevent too-low temperature
             "do_sample": True if temperature > 0 else False,
         }
 
@@ -380,12 +383,12 @@ class ChainOfThoughtModel(HuggingfaceModel):
         ):
             gen_kwargs["bad_words_ids"] = [[self.tokenizer.unk_token_id]]
 
-        # Get initial logits for branching with improved parameters
+        # Get initial logits for branching
         initial_kwargs = {**gen_kwargs, "max_new_tokens": 1}
         gen_out = self.model.generate(**inputs, **initial_kwargs)
         initial_logits = gen_out.scores[-1]
 
-        # Get top-k tokens and probabilities for branching
+        # Get top-k tokens and probabilities
         k = 5  # Number of branches
         k_tokens = initial_logits[0].argsort()[-k:]
         k_probs = torch.nn.functional.softmax(initial_logits[0][k_tokens], dim=0)
@@ -393,16 +396,20 @@ class ChainOfThoughtModel(HuggingfaceModel):
         # Store all branch outputs with their metrics
         branch_outputs = []
 
-        # Branch generation kwargs with improved parameters
+        # Branch generation kwargs - ensure longer outputs
         branch_kwargs = {
             **gen_kwargs,
             "max_new_tokens": self.max_new_tokens,
-            "num_beams": 3,  # Use small beam search for better quality
-            "early_stopping": True,
+            "num_beams": 3,  # Use small beam search for coherence
+            "early_stopping": False,  # Don't stop until max length
         }
 
+        valid_branches = 0
         # Explore each branch
         for token, init_prob in zip(k_tokens, k_probs):
+            if valid_branches >= 3:  # Ensure we get at least 3 valid branches
+                break
+
             # Create new input with the selected token
             new_query = cot_input + self.tokenizer.decode(token)
             new_inputs = self.tokenizer(new_query, return_tensors="pt").to(self.device)
@@ -416,15 +423,15 @@ class ChainOfThoughtModel(HuggingfaceModel):
                     branch_out.sequences[0], skip_special_tokens=True
                 )
 
-                # Skip branch if output is degenerate or contains repeated characters
-                if any(char * 3 in full_output for char in "二一三四五六七八九十"):
+                # Skip if output is too short or contains only numbers/single words
+                if len(full_output.split()) < 10 or not self.is_cot_path(full_output):
                     continue
 
                 # Extract answer and check if it's a CoT path
                 answer_text = self._extract_answer(full_output)
                 is_cot = self.is_cot_path(full_output)
 
-                # Skip if answer is too short or nonsensical
+                # Skip if answer is too short
                 if len(answer_text.strip()) < 2:
                     continue
 
@@ -478,18 +485,25 @@ class ChainOfThoughtModel(HuggingfaceModel):
                         "full_output": full_output,
                     }
                 )
+                valid_branches += 1
 
             except Exception as e:
                 logging.warning(f"Branch generation failed: {e}")
                 continue
 
-        # If no valid branches, fallback to direct generation
+        # If no valid branches, regenerate with more focused parameters
         if not branch_outputs:
-            logging.warning(
-                "No valid branches found, falling back to direct generation"
-            )
+            logging.warning("No valid branches found, attempting recovery generation")
+            recovery_kwargs = {
+                **branch_kwargs,
+                "num_beams": 5,  # Increase beam search
+                "temperature": 0.8,  # Stable temperature
+                "top_p": 0.95,
+                "repetition_penalty": 1.5,
+            }
+            recovery_out = self.model.generate(**inputs, **recovery_kwargs)
             full_output = self.tokenizer.decode(
-                gen_out.sequences[0], skip_special_tokens=True
+                recovery_out[0], skip_special_tokens=True
             )
             answer_text = self._extract_answer(full_output)
             return answer_text, [0.0], torch.zeros(self.model.config.hidden_size)
