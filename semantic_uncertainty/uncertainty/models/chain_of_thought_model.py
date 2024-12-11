@@ -342,8 +342,12 @@ class ChainOfThoughtModel(HuggingfaceModel):
         logging.info("Starting CoT prediction with temperature %s", temperature)
         logging.info("Input length: %d characters", len(input_data))
 
-        # Initial input processing
-        cot_input = input_data
+        # Properly format input to encourage natural language completion
+        if "Question:" not in input_data and "Q:" not in input_data:
+            cot_input = f"Question: {input_data}\nLet's solve this step by step:\n1."
+        else:
+            cot_input = input_data
+
         inputs = self.tokenizer(cot_input, return_tensors="pt").to(self.device)
         input_ids = inputs["input_ids"]
         attention_mask = torch.ones_like(input_ids)
@@ -352,14 +356,24 @@ class ChainOfThoughtModel(HuggingfaceModel):
         n_input_tokens = input_ids.size(1)
         logging.info("Input tokens: %d", n_input_tokens)
 
+        # Add generation constraints
+        gen_kwargs = {
+            "output_scores": True,
+            "return_dict_in_generate": True,
+            "max_new_tokens": self.max_new_tokens,
+            "temperature": temperature,
+            "do_sample": True if temperature > 0 else False,
+            "pad_token_id": self.tokenizer.eos_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "return_legacy_cache": True,
+            "bad_words_ids": [[self.tokenizer.unk_token_id]],
+            "repetition_penalty": 1.2,
+            "top_p": 0.9 if temperature > 0 else 1.0,
+            "output_hidden_states": True,
+        }
+
         # Get initial logits for branching
-        gen_out = self.model.generate(
-            **inputs,
-            output_scores=True,
-            return_dict_in_generate=True,
-            max_new_tokens=1,
-            pad_token_id=self.tokenizer.eos_token_id,
-        )
+        gen_out = self.model.generate(**inputs, **gen_kwargs, max_new_tokens=1)
         initial_logits = gen_out.scores[-1]
 
         # Get top-k tokens and probabilities
@@ -377,16 +391,7 @@ class ChainOfThoughtModel(HuggingfaceModel):
             new_inputs = self.tokenizer(new_query, return_tensors="pt").to(self.device)
 
             # Generate completion for this branch
-            branch_out = self.model.generate(
-                **new_inputs,
-                output_scores=True,
-                return_dict_in_generate=True,
-                max_new_tokens=self.max_new_tokens,
-                temperature=temperature,
-                do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id,
-                output_hidden_states=True,
-            )
+            branch_out = self.model.generate(**new_inputs, **gen_kwargs)
 
             # Decode full output
             full_output = self.tokenizer.decode(
@@ -412,7 +417,6 @@ class ChainOfThoughtModel(HuggingfaceModel):
             if len(branch_out.scores) >= len(answer_tokens):
                 answer_logits = branch_out.scores[-len(answer_tokens) :]
             else:
-                # If we don't have enough scores, use what we have
                 answer_logits = branch_out.scores
             confidence = self.compute_answer_confidence(answer_logits, answer_tokens)
 
