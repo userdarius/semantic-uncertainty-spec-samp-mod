@@ -342,9 +342,9 @@ class ChainOfThoughtModel(HuggingfaceModel):
         logging.info("Starting CoT prediction with temperature %s", temperature)
         logging.info("Input length: %d characters", len(input_data))
 
-        # Properly format input to encourage natural language completion
+        # Properly format input to encourage step-by-step reasoning
         if "Question:" not in input_data and "Q:" not in input_data:
-            cot_input = f"Question: {input_data}\nLet's solve this step by step:\n1."
+            cot_input = f"Question: {input_data}\nLet's solve this step by step:\n1. "
         else:
             cot_input = input_data
 
@@ -356,7 +356,7 @@ class ChainOfThoughtModel(HuggingfaceModel):
         n_input_tokens = input_ids.size(1)
         logging.info("Input tokens: %d", n_input_tokens)
 
-        # Base generation kwargs
+        # Enhanced base generation kwargs
         gen_kwargs = {
             "output_scores": True,
             "return_dict_in_generate": True,
@@ -364,22 +364,28 @@ class ChainOfThoughtModel(HuggingfaceModel):
             "eos_token_id": self.tokenizer.eos_token_id,
             "return_legacy_cache": True,
             "repetition_penalty": 1.2,
-            "top_p": 0.9 if temperature > 0 else 1.0,
+            "no_repeat_ngram_size": 3,
+            "top_p": 0.95 if temperature > 0 else 1.0,
             "output_hidden_states": True,
-            "temperature": temperature,
+            "temperature": max(
+                0.1, temperature
+            ),  # Prevent temperature from being too low
             "do_sample": True if temperature > 0 else False,
         }
 
         # Only add bad_words_ids if unk_token_id exists and is not None
-        if hasattr(self.tokenizer, 'unk_token_id') and self.tokenizer.unk_token_id is not None:
+        if (
+            hasattr(self.tokenizer, "unk_token_id")
+            and self.tokenizer.unk_token_id is not None
+        ):
             gen_kwargs["bad_words_ids"] = [[self.tokenizer.unk_token_id]]
 
-        # Get initial logits for branching
+        # Get initial logits for branching with improved parameters
         initial_kwargs = {**gen_kwargs, "max_new_tokens": 1}
         gen_out = self.model.generate(**inputs, **initial_kwargs)
         initial_logits = gen_out.scores[-1]
 
-        # Get top-k tokens and probabilities
+        # Get top-k tokens and probabilities for branching
         k = 5  # Number of branches
         k_tokens = initial_logits[0].argsort()[-k:]
         k_probs = torch.nn.functional.softmax(initial_logits[0][k_tokens], dim=0)
@@ -387,8 +393,13 @@ class ChainOfThoughtModel(HuggingfaceModel):
         # Store all branch outputs with their metrics
         branch_outputs = []
 
-        # Branch generation kwargs
-        branch_kwargs = {**gen_kwargs, "max_new_tokens": self.max_new_tokens}
+        # Branch generation kwargs with improved parameters
+        branch_kwargs = {
+            **gen_kwargs,
+            "max_new_tokens": self.max_new_tokens,
+            "num_beams": 3,  # Use small beam search for better quality
+            "early_stopping": True,
+        }
 
         # Explore each branch
         for token, init_prob in zip(k_tokens, k_probs):
@@ -396,66 +407,92 @@ class ChainOfThoughtModel(HuggingfaceModel):
             new_query = cot_input + self.tokenizer.decode(token)
             new_inputs = self.tokenizer(new_query, return_tensors="pt").to(self.device)
 
-            # Generate completion for this branch
-            branch_out = self.model.generate(**new_inputs, **branch_kwargs)
-
-            # Decode full output
-            full_output = self.tokenizer.decode(
-                branch_out.sequences[0], skip_special_tokens=True
-            )
-
-            # Extract answer and check if it's a CoT path
-            answer_text = self._extract_answer(full_output)
-            is_cot = self.is_cot_path(full_output)
-
-            # Get word-level probabilities
-            token_ids = branch_out.sequences[0][n_input_tokens:].tolist()
-            token_probs = [
-                torch.nn.functional.softmax(score[0], dim=-1).max().item()
-                for score in branch_out.scores
-            ]
-            word_probs = self.get_word_level_probs(token_ids, token_probs)
-
-            # Compute answer confidence
-            answer_tokens = self.tokenizer(answer_text, return_tensors="pt")[
-                "input_ids"
-            ][0]
-            if len(branch_out.scores) >= len(answer_tokens):
-                answer_logits = branch_out.scores[-len(answer_tokens) :]
-            else:
-                answer_logits = branch_out.scores
-            confidence = self.compute_answer_confidence(answer_logits, answer_tokens)
-
-            # Get hidden states
             try:
-                if (
-                    hasattr(branch_out, "decoder_hidden_states")
-                    and branch_out.decoder_hidden_states
-                ):
-                    hidden = branch_out.decoder_hidden_states[-1]
-                elif hasattr(branch_out, "hidden_states"):
-                    hidden = branch_out.hidden_states[-1][-1]
-                else:
-                    with torch.no_grad():
-                        model_output = self.model(
-                            branch_out.sequences, output_hidden_states=True
-                        )
-                        hidden = model_output.hidden_states[-1]
-                last_token_embedding = hidden[0, -1, :].cpu()
-            except Exception as e:
-                logging.warning(f"Could not extract hidden states: {e}")
-                last_token_embedding = torch.zeros(self.model.config.hidden_size)
+                # Generate completion for this branch
+                branch_out = self.model.generate(**new_inputs, **branch_kwargs)
 
-            branch_outputs.append(
-                {
-                    "answer": answer_text,
-                    "is_cot": is_cot,
-                    "confidence": confidence,
-                    "word_probs": word_probs,
-                    "embedding": last_token_embedding,
-                    "full_output": full_output,
-                }
+                # Decode full output
+                full_output = self.tokenizer.decode(
+                    branch_out.sequences[0], skip_special_tokens=True
+                )
+
+                # Skip branch if output is degenerate or contains repeated characters
+                if any(char * 3 in full_output for char in "二一三四五六七八九十"):
+                    continue
+
+                # Extract answer and check if it's a CoT path
+                answer_text = self._extract_answer(full_output)
+                is_cot = self.is_cot_path(full_output)
+
+                # Skip if answer is too short or nonsensical
+                if len(answer_text.strip()) < 2:
+                    continue
+
+                # Get word-level probabilities
+                token_ids = branch_out.sequences[0][n_input_tokens:].tolist()
+                token_probs = [
+                    torch.nn.functional.softmax(score[0], dim=-1).max().item()
+                    for score in branch_out.scores
+                ]
+                word_probs = self.get_word_level_probs(token_ids, token_probs)
+
+                # Compute answer confidence
+                answer_tokens = self.tokenizer(answer_text, return_tensors="pt")[
+                    "input_ids"
+                ][0]
+                if len(branch_out.scores) >= len(answer_tokens):
+                    answer_logits = branch_out.scores[-len(answer_tokens) :]
+                else:
+                    answer_logits = branch_out.scores
+                confidence = self.compute_answer_confidence(
+                    answer_logits, answer_tokens
+                )
+
+                # Get hidden states
+                try:
+                    if (
+                        hasattr(branch_out, "decoder_hidden_states")
+                        and branch_out.decoder_hidden_states
+                    ):
+                        hidden = branch_out.decoder_hidden_states[-1]
+                    elif hasattr(branch_out, "hidden_states"):
+                        hidden = branch_out.hidden_states[-1][-1]
+                    else:
+                        with torch.no_grad():
+                            model_output = self.model(
+                                branch_out.sequences, output_hidden_states=True
+                            )
+                            hidden = model_output.hidden_states[-1]
+                    last_token_embedding = hidden[0, -1, :].cpu()
+                except Exception as e:
+                    logging.warning(f"Could not extract hidden states: {e}")
+                    last_token_embedding = torch.zeros(self.model.config.hidden_size)
+
+                branch_outputs.append(
+                    {
+                        "answer": answer_text,
+                        "is_cot": is_cot,
+                        "confidence": confidence,
+                        "word_probs": word_probs,
+                        "embedding": last_token_embedding,
+                        "full_output": full_output,
+                    }
+                )
+
+            except Exception as e:
+                logging.warning(f"Branch generation failed: {e}")
+                continue
+
+        # If no valid branches, fallback to direct generation
+        if not branch_outputs:
+            logging.warning(
+                "No valid branches found, falling back to direct generation"
             )
+            full_output = self.tokenizer.decode(
+                gen_out.sequences[0], skip_special_tokens=True
+            )
+            answer_text = self._extract_answer(full_output)
+            return answer_text, [0.0], torch.zeros(self.model.config.hidden_size)
 
         # Select best branch based on confidence and CoT presence
         cot_branches = [b for b in branch_outputs if b["is_cot"]]
