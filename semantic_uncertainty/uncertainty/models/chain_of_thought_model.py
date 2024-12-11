@@ -179,7 +179,16 @@ class ChainOfThoughtModel(HuggingfaceModel):
 
         # Get final embedding
         if hasattr(follow_up_out, "hidden_states"):
-            last_token_embedding = follow_up_out.hidden_states[-1][0, -1, :].cpu()
+            # Handle tuple of hidden states correctly
+            hidden_states = follow_up_out.hidden_states
+            if isinstance(hidden_states, tuple):
+                # Get last layer's hidden states
+                last_layer_hidden = hidden_states[-1]
+                # Get last token embedding from last layer
+                last_token_embedding = last_layer_hidden[0, -1, :].cpu()
+            else:
+                # If hidden_states is not a tuple (direct tensor)
+                last_token_embedding = hidden_states[0, -1, :].cpu()
         else:
             last_token_embedding = torch.zeros(self.model.config.hidden_size)
 
