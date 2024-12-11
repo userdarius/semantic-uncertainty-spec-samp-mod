@@ -342,13 +342,9 @@ class ChainOfThoughtModel(HuggingfaceModel):
         logging.info("Starting CoT prediction with temperature %s", temperature)
         logging.info("Input length: %d characters", len(input_data))
 
-        # Enhanced prompt while keeping the CoT format
+        # Format the CoT prompt
         if "Question:" not in input_data and "Q:" not in input_data:
-            cot_input = (
-                f"Question: {input_data}\n"
-                "Let's solve this step by step:\n"
-                "1. First, let's understand what we know:\n"
-            )
+            cot_input = f"Question: {input_data}\nLet's solve this step by step:\n1."
         else:
             cot_input = input_data
 
@@ -360,171 +356,122 @@ class ChainOfThoughtModel(HuggingfaceModel):
         n_input_tokens = input_ids.size(1)
         logging.info("Input tokens: %d", n_input_tokens)
 
-        # Enhanced base generation kwargs
+        # Get initial branching logits
+        logits = self._get_next_token_logit(cot_input)
+        k = 5  # Number of paths to explore
+        top_k_tokens = logits[0].argsort()[-k:]
+        top_k_probs = torch.nn.functional.softmax(logits[0][top_k_tokens], dim=0)
+
+        best_response = None
+        best_confidence = -float("inf")
+        best_reasoning = None
+        best_logits = None
+        best_hidden = None
+
+        # Basic generation parameters
         gen_kwargs = {
+            "max_new_tokens": self.max_new_tokens,
             "output_scores": True,
             "return_dict_in_generate": True,
             "pad_token_id": self.tokenizer.eos_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-            "return_legacy_cache": True,
-            "repetition_penalty": 1.3,
-            "min_length": n_input_tokens + 20,  # Enforce minimum generation length
-            "no_repeat_ngram_size": 3,
-            "top_p": 0.95 if temperature > 0 else 1.0,
-            "output_hidden_states": True,
-            "temperature": max(0.7, temperature),  # Prevent too-low temperature
             "do_sample": True if temperature > 0 else False,
+            "temperature": temperature,
+            "output_hidden_states": True,
         }
 
-        # Only add bad_words_ids if unk_token_id exists and is not None
-        if (
-            hasattr(self.tokenizer, "unk_token_id")
-            and self.tokenizer.unk_token_id is not None
-        ):
-            gen_kwargs["bad_words_ids"] = [[self.tokenizer.unk_token_id]]
-
-        # Get initial logits for branching
-        initial_kwargs = {**gen_kwargs, "max_new_tokens": 1}
-        gen_out = self.model.generate(**inputs, **initial_kwargs)
-        initial_logits = gen_out.scores[-1]
-
-        # Get top-k tokens and probabilities
-        k = 5  # Number of branches
-        k_tokens = initial_logits[0].argsort()[-k:]
-        k_probs = torch.nn.functional.softmax(initial_logits[0][k_tokens], dim=0)
-
-        # Store all branch outputs with their metrics
-        branch_outputs = []
-
-        # Branch generation kwargs - ensure longer outputs
-        branch_kwargs = {
-            **gen_kwargs,
-            "max_new_tokens": self.max_new_tokens,
-            "num_beams": 3,  # Use small beam search for coherence
-            "early_stopping": False,  # Don't stop until max length
-        }
-
-        valid_branches = 0
-        # Explore each branch
-        for token, init_prob in zip(k_tokens, k_probs):
-            if valid_branches >= 3:  # Ensure we get at least 3 valid branches
-                break
-
-            # Create new input with the selected token
-            new_query = cot_input + self.tokenizer.decode(token)
-            new_inputs = self.tokenizer(new_query, return_tensors="pt").to(self.device)
-
+        # Explore each path
+        for token, prob in zip(top_k_tokens, top_k_probs):
             try:
-                # Generate completion for this branch
-                branch_out = self.model.generate(**new_inputs, **branch_kwargs)
-
-                # Decode full output
-                full_output = self.tokenizer.decode(
-                    branch_out.sequences[0], skip_special_tokens=True
+                # Generate initial reasoning chain
+                new_query = cot_input + self.tokenizer.decode(token)
+                new_inputs = self.tokenizer(new_query, return_tensors="pt").to(
+                    self.device
                 )
 
-                # Skip if output is too short or contains only numbers/single words
-                if len(full_output.split()) < 10 or not self.is_cot_path(full_output):
-                    continue
+                chain_output = self.model.generate(**new_inputs, **gen_kwargs)
 
-                # Extract answer and check if it's a CoT path
-                answer_text = self._extract_answer(full_output)
-                is_cot = self.is_cot_path(full_output)
+                # Generate answer after reasoning
+                reasoning_text = self.tokenizer.decode(
+                    chain_output.sequences[0], skip_special_tokens=True
+                )
+                follow_up = "\nTherefore, the answer is:"
 
-                # Skip if answer is too short
-                if len(answer_text.strip()) < 2:
-                    continue
-
-                # Get word-level probabilities
-                token_ids = branch_out.sequences[0][n_input_tokens:].tolist()
-                token_probs = [
-                    torch.nn.functional.softmax(score[0], dim=-1).max().item()
-                    for score in branch_out.scores
-                ]
-                word_probs = self.get_word_level_probs(token_ids, token_probs)
-
-                # Compute answer confidence
-                answer_tokens = self.tokenizer(answer_text, return_tensors="pt")[
+                follow_up_ids = self.tokenizer(follow_up, return_tensors="pt")[
                     "input_ids"
-                ][0]
-                if len(branch_out.scores) >= len(answer_tokens):
-                    answer_logits = branch_out.scores[-len(answer_tokens) :]
+                ].to(self.device)
+                full_ids = torch.cat([chain_output.sequences, follow_up_ids], dim=1)
+
+                answer_output = self.model.generate(
+                    input_ids=full_ids,
+                    attention_mask=torch.ones_like(full_ids),
+                    **gen_kwargs,
+                )
+
+                full_output = self.tokenizer.decode(
+                    answer_output.sequences[0], skip_special_tokens=True
+                )
+
+                # Extract reasoning and answer
+                reasoning_steps = self._extract_reasoning_steps(full_output)
+                answer = self._extract_answer(full_output)
+
+                # Skip if no clear reasoning or answer
+                if not reasoning_steps or not answer or len(answer.strip()) < 2:
+                    continue
+
+                # Calculate confidence based on logits
+                if len(answer_output.scores) > 0:
+                    answer_logits = answer_output.scores[
+                        -len(self.tokenizer(answer)["input_ids"]) :
+                    ]
+                    confidence = self.compute_answer_confidence(
+                        answer_logits,
+                        self.tokenizer(answer, return_tensors="pt")["input_ids"][0],
+                    )
                 else:
-                    answer_logits = branch_out.scores
-                confidence = self.compute_answer_confidence(
-                    answer_logits, answer_tokens
-                )
+                    confidence = 0.0
 
-                # Get hidden states
-                try:
-                    if (
-                        hasattr(branch_out, "decoder_hidden_states")
-                        and branch_out.decoder_hidden_states
-                    ):
-                        hidden = branch_out.decoder_hidden_states[-1]
-                    elif hasattr(branch_out, "hidden_states"):
-                        hidden = branch_out.hidden_states[-1][-1]
-                    else:
-                        with torch.no_grad():
-                            model_output = self.model(
-                                branch_out.sequences, output_hidden_states=True
-                            )
-                            hidden = model_output.hidden_states[-1]
-                    last_token_embedding = hidden[0, -1, :].cpu()
-                except Exception as e:
-                    logging.warning(f"Could not extract hidden states: {e}")
-                    last_token_embedding = torch.zeros(self.model.config.hidden_size)
-
-                branch_outputs.append(
-                    {
-                        "answer": answer_text,
-                        "is_cot": is_cot,
-                        "confidence": confidence,
-                        "word_probs": word_probs,
-                        "embedding": last_token_embedding,
-                        "full_output": full_output,
-                    }
-                )
-                valid_branches += 1
+                if confidence > best_confidence:
+                    best_response = answer
+                    best_confidence = confidence
+                    best_reasoning = reasoning_steps
+                    best_logits = answer_output.scores
+                    best_hidden = (
+                        answer_output.hidden_states[-1]
+                        if hasattr(answer_output, "hidden_states")
+                        else None
+                    )
 
             except Exception as e:
-                logging.warning(f"Branch generation failed: {e}")
+                logging.warning(f"Path generation failed: {e}")
                 continue
 
-        # If no valid branches, regenerate with more focused parameters
-        if not branch_outputs:
-            logging.warning("No valid branches found, attempting recovery generation")
-            recovery_kwargs = {
-                **branch_kwargs,
-                "num_beams": 5,  # Increase beam search
-                "temperature": 0.8,  # Stable temperature
-                "top_p": 0.95,
-                "repetition_penalty": 1.5,
-            }
-            recovery_out = self.model.generate(**inputs, **recovery_kwargs)
-            full_output = self.tokenizer.decode(
-                recovery_out[0], skip_special_tokens=True
+        # Return fallback if no valid paths
+        if best_response is None:
+            logging.warning(
+                "No valid reasoning paths found, falling back to direct generation"
             )
-            answer_text = self._extract_answer(full_output)
-            return answer_text, [0.0], torch.zeros(self.model.config.hidden_size)
+            outputs = self.model.generate(**inputs, **gen_kwargs)
+            text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            answer = self._extract_answer(text)
+            return answer, [0.0], torch.zeros(self.model.config.hidden_size)
 
-        # Select best branch based on confidence and CoT presence
-        cot_branches = [b for b in branch_outputs if b["is_cot"]]
-        if cot_branches:
-            # Prefer CoT paths with highest confidence
-            best_branch = max(cot_branches, key=lambda x: x["confidence"])
+        # Store reasoning steps
+        self.last_reasoning_steps = best_reasoning
+
+        # Calculate log likelihoods
+        log_likelihoods = []
+        if best_logits:
+            probs = [
+                torch.nn.functional.softmax(logit, dim=-1).max().item()
+                for logit in best_logits
+            ]
+            log_likelihoods = [-sum(np.log(p) for p in probs if p > 0)]
+
+        # Get embedding from hidden states
+        if best_hidden is not None:
+            embedding = best_hidden[0, -1, :].cpu()
         else:
-            # Fallback to highest confidence non-CoT path
-            best_branch = max(branch_outputs, key=lambda x: x["confidence"])
+            embedding = torch.zeros(self.model.config.hidden_size)
 
-        # Store reasoning steps if available
-        self.last_reasoning_steps = (
-            self._extract_reasoning_steps(best_branch["full_output"])
-            if best_branch["is_cot"]
-            else None
-        )
-
-        # Calculate log likelihoods for compatibility
-        log_likelihoods = [-sum([np.log(p) for w, p in best_branch["word_probs"]])]
-
-        return best_branch["answer"], log_likelihoods, best_branch["embedding"]
+        return best_response, log_likelihoods, embedding
