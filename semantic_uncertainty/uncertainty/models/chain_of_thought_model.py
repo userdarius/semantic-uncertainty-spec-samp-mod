@@ -139,39 +139,37 @@ class ChainOfThoughtModel(HuggingfaceModel):
         """Get word probabilities from the last prediction."""
         return getattr(self, "last_path_probs", None)
 
-    def compute_answer_confidence(self, logits: torch.Tensor, answer_tokens: torch.Tensor) -> float:
-        """Compute confidence score for answer tokens as described in paper Section 2.2.
-        
-        Args:
-            logits: Model logits for each position
-            answer_tokens: Tokens corresponding to the answer
-        
-        Returns:
-            float: Confidence score Δk,answer
-        """
+    def compute_answer_confidence(
+        self, logits: torch.Tensor, answer_tokens: torch.Tensor
+    ) -> float:
+        """Compute confidence score for answer tokens as described in paper Section 2.2."""
+        if not isinstance(logits, (list, tuple)):
+            logits = [logits]
+
         confidence_scores = []
-        
-        for pos, token in enumerate(answer_tokens):
+
+        for pos, logit in enumerate(logits):
             # Get probabilities for this position
-            probs = torch.nn.functional.softmax(logits[pos], dim=-1)
-            
-            # Get top 2 probabilities
-            k = min(2, len(probs[0]))  # Handle case where there's only 1 non-zero prob
-            top_probs, _ = torch.topk(probs, k=k)
-            
-            if k == 1:
-                # If only one token has non-zero probability, confidence is 1
-                prob_diff = 1.0
+            probs = torch.nn.functional.softmax(logit, dim=-1)[
+                0
+            ]  # Add [0] to get first batch
+
+            # Sort probabilities in descending order
+            sorted_probs, _ = torch.sort(probs, descending=True)
+
+            # Calculate confidence as difference between top two probabilities
+            # If there's only one non-zero probability, use 1.0 as confidence
+            if len(sorted_probs) > 1:
+                prob_diff = (sorted_probs[0] - sorted_probs[1]).item()
             else:
-                prob_diff = (top_probs[0] - top_probs[1]).item()
-                
+                prob_diff = 1.0
+
             confidence_scores.append(prob_diff)
-        
-        # Average over all answer tokens
+
+        # Average over all positions
         if confidence_scores:
             return sum(confidence_scores) / len(confidence_scores)
-        else:
-            return 0.0
+        return 0.0
 
     def get_word_level_probs(
         self, token_ids: List[int], token_probs: List[float]
@@ -411,7 +409,11 @@ class ChainOfThoughtModel(HuggingfaceModel):
             answer_tokens = self.tokenizer(answer_text, return_tensors="pt")[
                 "input_ids"
             ][0]
-            answer_logits = branch_out.scores[-len(answer_tokens) :]
+            if len(branch_out.scores) >= len(answer_tokens):
+                answer_logits = branch_out.scores[-len(answer_tokens) :]
+            else:
+                # If we don't have enough scores, use what we have
+                answer_logits = branch_out.scores
             confidence = self.compute_answer_confidence(answer_logits, answer_tokens)
 
             # Get hidden states
