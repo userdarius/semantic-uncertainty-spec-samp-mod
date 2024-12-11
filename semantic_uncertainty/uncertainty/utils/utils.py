@@ -187,12 +187,6 @@ def get_parser(stages=["generate", "compute"]):
             help="Use Chain of Thought decoding",
         )
         parser.add_argument(
-            "--cot_prompt_template",
-            type=str,
-            default="Let's solve this step by step:\n1. ",
-            help="Template for Chain of Thought prompting",
-        )
-        parser.add_argument(
             "--save_reasoning_steps",
             default=True,
             action=argparse.BooleanOptionalAction,
@@ -435,7 +429,6 @@ def init_model(args):
             mn,
             stop_sequences="default",
             max_new_tokens=args.model_max_new_tokens,
-            cot_prompt_template=args.cot_prompt_template,
         )
     elif args.use_speculative_sampling:
         model = SpeculativeSamplingModel(
