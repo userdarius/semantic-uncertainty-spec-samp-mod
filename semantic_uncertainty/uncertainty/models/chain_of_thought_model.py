@@ -66,7 +66,9 @@ class ChainOfThoughtModel(HuggingfaceModel):
             token_ids, probs = self._get_token_path_prob(gen_out, num_append=0)
         else:
             token_ids, probs = self._get_token_path_prob(gen_out)
-            probs = torch.concat([init_token_prob, probs])
+            # Convert init_token_prob to tensor and match device
+            init_prob_tensor = torch.tensor([init_token_prob]).to(probs.device)
+            probs = torch.cat([init_prob_tensor, probs])
 
         word_probs = []
         ids = []
@@ -81,11 +83,11 @@ class ChainOfThoughtModel(HuggingfaceModel):
             word = words[-1]
 
             if len(words) == current_n_words:
-                word_prob += prob
+                word_prob += prob.item()  # Convert tensor to scalar
                 current_n_tokens += 1
                 word_probs[-1] = (word, word_prob / current_n_tokens)
             else:
-                word_prob = prob
+                word_prob = prob.item()  # Convert tensor to scalar
                 current_n_tokens = 1
                 word_probs.append((word, word_prob / current_n_tokens))
                 current_n_words += 1
