@@ -356,13 +356,10 @@ class ChainOfThoughtModel(HuggingfaceModel):
         n_input_tokens = input_ids.size(1)
         logging.info("Input tokens: %d", n_input_tokens)
 
-        # Add generation constraints
+        # Base generation kwargs
         gen_kwargs = {
             "output_scores": True,
             "return_dict_in_generate": True,
-            "max_new_tokens": self.max_new_tokens,
-            "temperature": temperature,
-            "do_sample": True if temperature > 0 else False,
             "pad_token_id": self.tokenizer.eos_token_id,
             "eos_token_id": self.tokenizer.eos_token_id,
             "return_legacy_cache": True,
@@ -370,10 +367,13 @@ class ChainOfThoughtModel(HuggingfaceModel):
             "repetition_penalty": 1.2,
             "top_p": 0.9 if temperature > 0 else 1.0,
             "output_hidden_states": True,
+            "temperature": temperature,
+            "do_sample": True if temperature > 0 else False,
         }
 
         # Get initial logits for branching
-        gen_out = self.model.generate(**inputs, **gen_kwargs, max_new_tokens=1)
+        initial_kwargs = {**gen_kwargs, "max_new_tokens": 1}
+        gen_out = self.model.generate(**inputs, **initial_kwargs)
         initial_logits = gen_out.scores[-1]
 
         # Get top-k tokens and probabilities
@@ -384,6 +384,9 @@ class ChainOfThoughtModel(HuggingfaceModel):
         # Store all branch outputs with their metrics
         branch_outputs = []
 
+        # Branch generation kwargs
+        branch_kwargs = {**gen_kwargs, "max_new_tokens": self.max_new_tokens}
+
         # Explore each branch
         for token, init_prob in zip(k_tokens, k_probs):
             # Create new input with the selected token
@@ -391,7 +394,7 @@ class ChainOfThoughtModel(HuggingfaceModel):
             new_inputs = self.tokenizer(new_query, return_tensors="pt").to(self.device)
 
             # Generate completion for this branch
-            branch_out = self.model.generate(**new_inputs, **gen_kwargs)
+            branch_out = self.model.generate(**new_inputs, **branch_kwargs)
 
             # Decode full output
             full_output = self.tokenizer.decode(
