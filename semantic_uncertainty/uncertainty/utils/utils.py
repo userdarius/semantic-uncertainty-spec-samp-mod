@@ -17,7 +17,6 @@ from uncertainty.models.chain_of_thought_model import ChainOfThoughtModel
 BRIEF_PROMPTS = {
     "default": "Answer the following question as briefly as possible.\n",
     "chat": "Answer the following question in a single brief but complete sentence.\n",
-    "cot": "Let's solve this step by step, then provide a brief final answer.\n",  # Added CoT prompt
 }
 
 

@@ -86,7 +86,7 @@ def main(args):
 
     # Create Few-Shot prompt.
     make_prompt = utils.get_make_prompt(args)
-    BRIEF = utils.BRIEF_PROMPTS["cot" if args.use_chain_of_thought else args.brief_prompt]
+    BRIEF = utils.BRIEF_PROMPTS[args.brief_prompt]
     arg = args.brief_always if args.enable_brief else True
     prompt = utils.construct_fewshot_prompt_from_indices(
         train_dataset, prompt_indices, BRIEF, arg, make_prompt)
