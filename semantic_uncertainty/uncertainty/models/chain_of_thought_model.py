@@ -363,13 +363,16 @@ class ChainOfThoughtModel(HuggingfaceModel):
             "pad_token_id": self.tokenizer.eos_token_id,
             "eos_token_id": self.tokenizer.eos_token_id,
             "return_legacy_cache": True,
-            "bad_words_ids": [[self.tokenizer.unk_token_id]],
             "repetition_penalty": 1.2,
             "top_p": 0.9 if temperature > 0 else 1.0,
             "output_hidden_states": True,
             "temperature": temperature,
             "do_sample": True if temperature > 0 else False,
         }
+
+        # Only add bad_words_ids if unk_token_id exists and is not None
+        if hasattr(self.tokenizer, 'unk_token_id') and self.tokenizer.unk_token_id is not None:
+            gen_kwargs["bad_words_ids"] = [[self.tokenizer.unk_token_id]]
 
         # Get initial logits for branching
         initial_kwargs = {**gen_kwargs, "max_new_tokens": 1}
