@@ -1,4 +1,4 @@
-"""Generate answers for semantic uncertainty analysis."""
+"""Sample answers from LLMs for semantic uncertainty analysis."""
 
 import gc
 import os
@@ -28,13 +28,16 @@ def process_model_output(output, model):
 
 
 def main(args):
-    # Setup wandb
+    # Setup run
+    random.seed(args.random_seed)
     user = os.environ["USER"]
     slurm_jobid = os.getenv("SLURM_JOB_ID", None)
     scratch_dir = os.getenv("SCRATCH_DIR", ".")
+
     if not os.path.exists(f"{scratch_dir}/{user}/uncertainty"):
         os.makedirs(f"{scratch_dir}/{user}/uncertainty")
 
+    # Initialize wandb
     wandb.init(
         entity=args.entity,
         project=(
@@ -46,42 +49,43 @@ def main(args):
     )
     logging.info("Finished wandb init.")
 
+    # Get accuracy metric
+    metric = utils.get_metric(args.metric)
+
     # Load dataset
     train_dataset, validation_dataset = load_ds(
         args.dataset, add_options=args.use_mc_options, seed=args.random_seed
     )
 
-    # Get indices of answerable questions and construct prompt
+    # Get indices for few-shot prompts
     answerable_indices, _ = utils.split_dataset(train_dataset)
     prompt_indices = random.sample(answerable_indices, args.num_few_shot)
 
-    # Create Few-Shot prompt
+    # Create few-shot prompt
     make_prompt = utils.get_make_prompt(args)
     BRIEF = utils.BRIEF_PROMPTS[args.brief_prompt]
+    brief_always = args.brief_always if args.enable_brief else True
     prompt = utils.construct_fewshot_prompt_from_indices(
-        train_dataset,
-        prompt_indices,
-        BRIEF,
-        args.brief_always if args.enable_brief else True,
-        make_prompt,
+        train_dataset, prompt_indices, BRIEF, brief_always, make_prompt
     )
     logging.info("Prompt is: %s", prompt)
 
     # Initialize model
     model = utils.init_model(args)
 
-    # Start answer generation for validation set
+    # Start answer generation
     logging.info(80 * "=")
-    logging.info("Generating answers for validation set:")
+    logging.info("Generating answers for semantic uncertainty analysis:")
     logging.info(80 * "=")
 
+    # Process validation dataset
     accuracies = []
     generations = {}
-    metric = utils.get_metric(args.metric)
 
-    # Get indices for validation set
+    # Sample subset of validation dataset
+    possible_indices = range(len(validation_dataset))
     indices = random.sample(
-        range(len(validation_dataset)), min(args.num_samples, len(validation_dataset))
+        possible_indices, min(args.num_samples, len(validation_dataset))
     )
 
     if args.num_samples > len(validation_dataset):
@@ -90,7 +94,7 @@ def main(args):
             len(validation_dataset),
         )
 
-    # Generate answers
+    # Generate answers for each example
     for it, index in enumerate(tqdm(indices)):
         if (it + 1) % 10 == 0:
             gc.collect()
@@ -99,25 +103,19 @@ def main(args):
         # Get example
         example = validation_dataset[index]
         question, context = example["question"], example["context"]
-        generations[example["id"]] = {
-            "question": question,
-            "context": context,
-            "reference": utils.get_reference(example),
-        }
+        generations[example["id"]] = {"question": question, "context": context}
+        correct_answer = example["answers"]["text"]
 
-        # Create prompt for this example
-        current_input = make_prompt(
-            context, question, None, BRIEF, args.brief_always and args.enable_brief
-        )
+        # Construct prompt
+        current_input = make_prompt(context, question, None, BRIEF, brief_always)
         local_prompt = prompt + current_input
         logging.info("Current input: ".ljust(15) + current_input)
 
-        # Generate answers
         full_responses = []
-        num_generations = args.num_generations + 1
 
-        for i in range(num_generations):
-            # Low temperature for first generation
+        # Generate answers with different temperatures
+        for i in range(args.num_generations + 1):
+            # First generation always uses low temperature
             temperature = 0.1 if i == 0 else args.temperature
 
             try:
@@ -143,30 +141,31 @@ def main(args):
                 embedding = None
 
             # Compute accuracy for answerable questions
-            if example["answers"]["text"]:
-                acc = metric(predicted_answer, example, model)
-            else:
-                acc = 0.0
+            acc = metric(predicted_answer, example, model) if correct_answer else 0.0
 
-            # Store first (low temperature) generation
+            # Handle first (low temperature) generation
             if i == 0:
                 logging.info("Iteration " + str(it) + ":  " + 80 * "#")
                 if args.use_context:
                     logging.info("context: ".ljust(15) + str(context))
                 logging.info("question: ".ljust(15) + question)
                 logging.info("low-t prediction: ".ljust(15) + predicted_answer)
-                logging.info(
-                    "correct answer: ".ljust(15) + str(example["answers"]["text"])
-                )
+                logging.info("correct answer: ".ljust(15) + str(correct_answer))
                 logging.info("accuracy: ".ljust(15) + str(acc))
 
                 accuracies.append(acc)
-                generations[example["id"]]["most_likely_answer"] = {
+                most_likely_answer_dict = {
                     "response": predicted_answer,
                     "token_log_likelihoods": token_log_likelihoods,
                     "embedding": embedding,
                     "accuracy": acc,
                 }
+                generations[example["id"]].update(
+                    {
+                        "most_likely_answer": most_likely_answer_dict,
+                        "reference": utils.get_reference(example),
+                    }
+                )
             else:
                 logging.info(
                     "high-t prediction ".ljust(15) + str(i) + " : " + predicted_answer
@@ -175,6 +174,7 @@ def main(args):
                     (predicted_answer, token_log_likelihoods, embedding, acc)
                 )
 
+        # Store all responses for this example
         generations[example["id"]]["responses"] = full_responses
 
     # Save generations
@@ -182,17 +182,19 @@ def main(args):
 
     # Log overall accuracy
     accuracy = np.mean(accuracies)
-    logging.info(f"Overall validation accuracy: {accuracy}")
+    print(f"Overall validation accuracy: {accuracy}")
     wandb.log({"validation_accuracy": accuracy})
 
-    logging.info("Generation complete.")
+    # Cleanup
     del model
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
     parser = utils.get_parser()
     args, unknown = parser.parse_known_args()
-    logging.info("Starting generation with args: %s", args)
+    logging.info("Starting new run with args: %s", args)
 
     if unknown:
         raise ValueError(f"Unknown args: {unknown}")
