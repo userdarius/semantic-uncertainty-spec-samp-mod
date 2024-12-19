@@ -85,9 +85,11 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
             # Ensure inputs are on correct device
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            # Initialize storage for probabilities and hidden states
+            # Initialize storage for probabilities
             response_probs = []
-            hidden_states = []
+
+            # Track the final hidden state only
+            final_hidden_state = None
 
             # Check token limit
             if max_length > self.token_limit:
@@ -102,8 +104,8 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
                         **inputs, output_hidden_states=True, return_dict=True
                     )
 
-                # Store hidden states
-                hidden_states.append(outputs.hidden_states[-1])
+                # Store only the last layer's hidden state
+                final_hidden_state = outputs.hidden_states[-1]
 
                 # Get next token probabilities
                 next_token_logits = outputs.logits[:, -1, :]
@@ -144,7 +146,7 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
                         dim=1,
                     )
 
-            return inputs["input_ids"], response_probs, torch.stack(hidden_states)
+            return inputs["input_ids"], response_probs, final_hidden_state
 
         except Exception as e:
             logging.error("Error in generate_single_response: %s", str(e))
@@ -155,10 +157,10 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
         input_data: str,
         temperature: float,
         return_full: bool = False,
-        use_branching: bool = False,
+        use_branching: bool = True,  # Changed default to True since this is Chain of Thought
         num_branches: int = 10,
     ) -> tuple[str, List[float], torch.Tensor]:
-        """Enhanced predict method with better error handling and output processing."""
+        """Enhanced predict method with better hidden states handling."""
         try:
             logging.info("Starting prediction with temperature %s", temperature)
             logging.info("Input length: %d characters", len(input_data))
@@ -178,7 +180,7 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
 
                 best_response = None
                 best_score = float("-inf")
-                best_hidden_states = None
+                best_hidden_state = None
                 best_probs = None
 
                 # Generate branches
@@ -191,7 +193,7 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
                     if avg_prob > best_score:
                         best_score = avg_prob
                         best_response = response_ids
-                        best_hidden_states = hidden
+                        best_hidden_state = hidden  # Now storing single hidden state
                         best_probs = probs
 
                 # Decode response
@@ -227,8 +229,8 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
                         if stop in answer:
                             answer = answer[: answer.find(stop)].strip()
 
-                # Get last token embedding
-                last_token_embedding = best_hidden_states[-1][0, -1, :].cpu()
+                # Get last token embedding - using the final hidden state directly
+                last_token_embedding = best_hidden_state[0, -1, :].cpu()
 
                 return answer, best_probs, last_token_embedding
 
