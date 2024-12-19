@@ -3,6 +3,7 @@ import torch
 from tqdm import tqdm
 from typing import List, Tuple, Dict, Optional
 import logging
+import random
 
 
 class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
@@ -77,79 +78,87 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
 
             return topk_values, topk_indices
 
-    def generate_single_response(
-        self, inputs: Dict[str, torch.Tensor], max_length: int = 500
+    def generate_single_response_batch(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        num_branches: int = 5,
+        max_length: int = 500,
     ) -> Tuple[torch.Tensor, List[float], torch.Tensor]:
-        """Generate a single response with probability tracking and hidden states."""
+        """Generate multiple responses in parallel using batching."""
         try:
-            # Ensure inputs are on correct device
+            # Expand inputs to create branches in one batch
+            batch_size = num_branches
+            inputs = {
+                k: (
+                    v.repeat(batch_size, 1)
+                    if v.dim() == 2
+                    else v.repeat(batch_size, 1, 1)
+                )
+                for k, v in inputs.items()
+            }
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            # Initialize storage for probabilities
-            response_probs = []
+            # Initialize storage
+            response_probs = torch.zeros(
+                batch_size, dtype=torch.float, device=self.device
+            )
+            final_hidden_states = None
+            all_response_ids = inputs["input_ids"]
 
-            # Track the final hidden state only
-            final_hidden_state = None
-
-            # Check token limit
-            if max_length > self.token_limit:
-                raise ValueError(
-                    f"max_length {max_length} exceeds token limit {self.token_limit}"
-                )
-
+            # Generate tokens for all branches simultaneously
             for _ in range(max_length):
-                # Generate with output_hidden_states=True to match speculative model
                 with torch.no_grad():
                     outputs = self.model(
                         **inputs, output_hidden_states=True, return_dict=True
                     )
 
-                # Store only the last layer's hidden state
-                final_hidden_state = outputs.hidden_states[-1]
+                # Store final hidden states
+                final_hidden_states = outputs.hidden_states[-1]
 
-                # Get next token probabilities
+                # Get next token probabilities for all branches
                 next_token_logits = outputs.logits[:, -1, :]
                 probabilities = torch.softmax(next_token_logits, dim=-1)
 
-                # Get top tokens
-                topk_values, topk_indices = torch.topk(probabilities, k=2)
+                # Sample next tokens for all branches
+                if random.random() < 0.9:  # Add some randomness to branches
+                    next_tokens = torch.multinomial(probabilities, num_samples=1)
+                else:
+                    # Sometimes take top-k for diversity
+                    _, next_tokens = torch.topk(probabilities, k=1, dim=-1)
 
-                # Calculate probability difference
-                prob_diff = topk_values[:, 0] - topk_values[:, 1]
-                response_probs.append(prob_diff.item())
+                # Update response probabilities
+                token_probs = torch.gather(probabilities, 1, next_tokens)
+                response_probs += token_probs.squeeze(-1)
 
-                # Get next token
-                next_token = topk_indices[:, 0].unsqueeze(-1)
-
-                # Handle special tokens based on model type
-                if (
-                    "llama" in self.model_name.lower()
-                    or "falcon" in self.model_name
-                    or "mistral" in self.model_name.lower()
-                ):
-                    pad_token_id = self.tokenizer.eos_token_id
-                    if next_token.item() == pad_token_id:
-                        break
-                elif next_token.item() == self.tokenizer.eos_token_id:
+                # Check for stopping conditions
+                is_finished = next_tokens == self.tokenizer.eos_token_id
+                if is_finished.all():
                     break
 
-                # Update inputs
+                # Update inputs for next iteration
                 inputs["input_ids"] = torch.cat(
-                    [inputs["input_ids"], next_token], dim=1
+                    [inputs["input_ids"], next_tokens], dim=1
                 )
                 if "attention_mask" in inputs:
                     inputs["attention_mask"] = torch.cat(
                         [
                             inputs["attention_mask"],
-                            torch.ones((1, 1), dtype=torch.long, device=self.device),
+                            torch.ones(
+                                (batch_size, 1), dtype=torch.long, device=self.device
+                            ),
                         ],
                         dim=1,
                     )
 
-            return inputs["input_ids"], response_probs, final_hidden_state
+            # Average the probabilities over sequence length
+            response_probs = response_probs / (
+                inputs["input_ids"].size(1) - all_response_ids.size(1)
+            )
+
+            return inputs["input_ids"], response_probs.tolist(), final_hidden_states
 
         except Exception as e:
-            logging.error("Error in generate_single_response: %s", str(e))
+            logging.error("Error in generate_single_response_batch: %s", str(e))
             raise
 
     def predict(
@@ -157,10 +166,10 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
         input_data: str,
         temperature: float,
         return_full: bool = False,
-        use_branching: bool = True,  # Changed default to True since this is Chain of Thought
+        use_branching: bool = True,
         num_branches: int = 10,
     ) -> tuple[str, List[float], torch.Tensor]:
-        """Enhanced predict method with better hidden states handling."""
+        """Optimized predict method using batched generation."""
         try:
             logging.info("Starting prediction with temperature %s", temperature)
             logging.info("Input length: %d characters", len(input_data))
@@ -169,32 +178,26 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
                 raise ValueError("Empty input data")
 
             if use_branching:
-                # Clear GPU cache before branching
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
 
                 # Tokenize input
                 inputs = self.tokenizer(input_data, return_tensors="pt")
-                n_input_tokens = inputs["input_ids"].size(1)
-                logging.info("Input tokens: %d", n_input_tokens)
+                logging.info("Input tokens: %d", inputs["input_ids"].size(1))
 
-                best_response = None
-                best_score = float("-inf")
-                best_hidden_state = None
-                best_probs = None
-
-                # Generate branches
-                for k in tqdm(range(num_branches), desc="Generating branches"):
-                    response_ids, probs, hidden = self.generate_single_response(
-                        inputs.copy()
+                # Generate all branches in one pass
+                response_ids, probs, hidden_states = (
+                    self.generate_single_response_batch(
+                        inputs,
+                        num_branches=num_branches,
+                        max_length=self.max_new_tokens,
                     )
-                    avg_prob = sum(probs) / len(probs) if probs else 0
+                )
 
-                    if avg_prob > best_score:
-                        best_score = avg_prob
-                        best_response = response_ids
-                        best_hidden_state = hidden  # Now storing single hidden state
-                        best_probs = probs
+                # Find best response
+                best_idx = max(range(len(probs)), key=lambda i: probs[i])
+                best_response = response_ids[best_idx : best_idx + 1]
+                best_probs = [probs[best_idx]]
+                best_hidden_state = hidden_states[best_idx : best_idx + 1]
 
                 # Decode response
                 full_answer = self.tokenizer.decode(
@@ -204,10 +207,9 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
                 if return_full:
                     return full_answer
 
-                # Process output similar to speculative model
+                # Process output
                 if full_answer.startswith(input_data):
                     input_data_offset = len(input_data)
-                    logging.info("Using direct input offset: %d", input_data_offset)
                 else:
                     content_start = full_answer.find("Answer:")
                     if content_start != -1:
@@ -222,26 +224,23 @@ class ChainOfThoughtHuggingfaceModel(HuggingfaceModel):
                                 f"Cannot find answer content in text: {full_answer}"
                             )
 
-                # Extract answer and handle stop sequences
+                # Extract answer
                 answer = full_answer[input_data_offset:].strip()
                 if self.stop_sequences:
                     for stop in self.stop_sequences:
                         if stop in answer:
                             answer = answer[: answer.find(stop)].strip()
 
-                # Get last token embedding - using the final hidden state directly
                 last_token_embedding = best_hidden_state[0, -1, :].cpu()
 
                 return answer, best_probs, last_token_embedding
 
             else:
-                # Use parent class implementation for non-branching generation
                 return super().predict(input_data, temperature, return_full)
 
         except Exception as e:
             logging.error("Error in predict: %s", str(e))
-            torch.cuda.empty_cache()  # Cleanup on error
+            torch.cuda.empty_cache()
             raise
         finally:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
