@@ -26,5 +26,5 @@ python3 semantic_uncertainty/generate_answers.py     --use_speculative_sampling 
 Execute with CoT reasoning
 
 ```
-python3 semantic_uncertainty/generate_answers.py --use_chain_of_thought --model_name "Llama-3.2-3b" --save_reasoning_steps
+python3 semantic_uncertainty/generate_answers.py --use_chain_of_thought --model_name "Llama-3.2-3b" 
 ```
