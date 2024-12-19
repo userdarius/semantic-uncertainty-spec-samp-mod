@@ -1,139 +1,158 @@
 """Compute semantic uncertainty measures."""
 
-import pickle
 from collections import defaultdict
 import logging
+import os
+import pickle
 import numpy as np
+import wandb
+
 from uncertainty.uncertainty_measures.semantic_entropy import get_semantic_ids
 from uncertainty.uncertainty_measures.semantic_entropy import logsumexp_by_id
 from uncertainty.uncertainty_measures.semantic_entropy import predictive_entropy
 from uncertainty.uncertainty_measures.semantic_entropy import predictive_entropy_rao
 from uncertainty.uncertainty_measures.semantic_entropy import cluster_assignment_entropy
+from uncertainty.uncertainty_measures.semantic_entropy import context_entails_response
 from uncertainty.uncertainty_measures.semantic_entropy import EntailmentDeberta
+from uncertainty.uncertainty_measures.semantic_entropy import EntailmentGPT4
+from uncertainty.uncertainty_measures.semantic_entropy import EntailmentGPT35
+from uncertainty.uncertainty_measures.semantic_entropy import EntailmentGPT4Turbo
+from uncertainty.uncertainty_measures.semantic_entropy import EntailmentLlama
 from uncertainty.utils import utils
 
 utils.setup_logger()
 
 
 def main(args):
-    logging.info("Starting semantic uncertainty computation")
-    logging.info(f"Arguments: {args}")
+    user = os.environ["USER"]
+    scratch_dir = os.getenv("SCRATCH_DIR", ".")
+    wandb_dir = f"{scratch_dir}/{user}/uncertainty"
+    slurm_jobid = os.getenv("SLURM_JOB_ID", None)
+    project = "semantic_uncertainty" if not args.debug else "semantic_uncertainty_debug"
+
+    wandb.init(
+        entity=args.entity,
+        project=project,
+        dir=wandb_dir,
+        notes=f"slurm_id: {slurm_jobid}, experiment_lot: {args.experiment_lot}",
+        config=args.__dict__,
+    )
 
     # Load entailment model
     logging.info("Beginning loading for entailment model.")
-    entailment_model = EntailmentDeberta()
+    if args.entailment_model == "deberta":
+        entailment_model = EntailmentDeberta()
+    elif args.entailment_model == "gpt-4":
+        entailment_model = EntailmentGPT4(
+            args.entailment_cache_id, args.entailment_cache_only
+        )
+    elif args.entailment_model == "gpt-3.5":
+        entailment_model = EntailmentGPT35(
+            args.entailment_cache_id, args.entailment_cache_only
+        )
+    elif args.entailment_model == "gpt-4-turbo":
+        entailment_model = EntailmentGPT4Turbo(
+            args.entailment_cache_id, args.entailment_cache_only
+        )
+    elif "llama" in args.entailment_model.lower():
+        entailment_model = EntailmentLlama(
+            args.entailment_cache_id, args.entailment_cache_only, args.entailment_model
+        )
+    else:
+        raise ValueError("Invalid entailment model")
     logging.info("Entailment model loading complete.")
 
-    # Load generations
-    logging.info("Loading generated responses from validation_generations.pkl")
-    try:
-        with open("validation_generations.pkl", "rb") as f:
-            validation_generations = pickle.load(f)
-        logging.info(f"Loaded {len(validation_generations)} examples")
-    except Exception as e:
-        logging.error(f"Error loading generations: {str(e)}")
-        return
+    # Load validation generations
+    with open(f"{wandb.run.dir}/validation_generations.pkl", "rb") as infile:
+        validation_generations = pickle.load(infile)
 
-    result_dict = {}
-    result_dict["semantic_ids"] = []
     entropies = defaultdict(list)
+    result_dict = {"semantic_ids": []}
+    count = 0
 
     # Loop over datapoints and compute entropies
-    logging.info("Starting entropy computations")
-    total_examples = len(validation_generations)
-
     for idx, tid in enumerate(validation_generations):
-        logging.info(f"\nProcessing example {idx+1}/{total_examples}")
-        logging.info(f"Example ID: {tid}")
-
         example = validation_generations[tid]
         question = example["question"]
-        responses = [fr[0] for fr in example["responses"]]
-        log_liks = [r[1] for r in example["responses"]]
+        context = example["context"]
+        full_responses = example["responses"]
+        most_likely_answer = example["most_likely_answer"]
 
-        logging.info(f"Question: {question}")
-        logging.info(f"Number of responses: {len(responses)}")
+        if not args.use_all_generations:
+            if args.use_num_generations == -1:
+                raise ValueError
+            responses = [fr[0] for fr in full_responses[: args.use_num_generations]]
+            log_liks = [r[1] for r in full_responses[: args.use_num_generations]]
+        else:
+            responses = [fr[0] for fr in full_responses]
+            log_liks = [r[1] for r in full_responses]
+
+        if args.compute_context_entails_response:
+            entropies["context_entails_response"].append(
+                context_entails_response(context, responses, entailment_model)
+            )
+
+        if args.condition_on_question and args.entailment_model == "deberta":
+            responses = [f"{question} {r}" for r in responses]
 
         # Compute semantic ids
-        logging.info("Computing semantic IDs...")
-        try:
-            semantic_ids = get_semantic_ids(
-                responses,
-                model=entailment_model,
-                strict_entailment=args.strict_entailment,
-                example=example,
-            )
-            result_dict["semantic_ids"].append(semantic_ids)
-            logging.info(f"Semantic IDs computed: {semantic_ids}")
-        except Exception as e:
-            logging.error(f"Error computing semantic IDs: {str(e)}")
-            continue
+        semantic_ids = get_semantic_ids(
+            responses,
+            model=entailment_model,
+            strict_entailment=args.strict_entailment,
+            example=example,
+        )
 
-        # Compute entropies
-        try:
-            # Cluster assignment entropy
-            cluster_entropy = cluster_assignment_entropy(semantic_ids)
-            entropies["cluster_assignment_entropy"].append(cluster_entropy)
-            logging.info(f"Cluster assignment entropy: {cluster_entropy:.4f}")
+        result_dict["semantic_ids"].append(semantic_ids)
 
-            # Length normalization of generation probabilities
-            log_liks_agg = [np.mean(log_lik) for log_lik in log_liks]
+        # Compute entropy from frequencies of cluster assignments
+        entropies["cluster_assignment_entropy"].append(
+            cluster_assignment_entropy(semantic_ids)
+        )
 
-            # Regular entropy
-            reg_entropy = predictive_entropy(log_liks_agg)
-            entropies["regular_entropy"].append(reg_entropy)
-            logging.info(f"Regular entropy: {reg_entropy:.4f}")
+        # Length normalization of generation probabilities
+        log_liks_agg = [np.mean(log_lik) for log_lik in log_liks]
 
-            # Semantic entropy
-            log_likelihood_per_semantic_id = logsumexp_by_id(
-                semantic_ids, log_liks_agg, agg="sum_normalized"
-            )
-            semantic_entropy = predictive_entropy_rao(log_likelihood_per_semantic_id)
-            entropies["semantic_entropy"].append(semantic_entropy)
-            logging.info(f"Semantic entropy: {semantic_entropy:.4f}")
+        # Compute naive entropy
+        entropies["regular_entropy"].append(predictive_entropy(log_liks_agg))
 
-        except Exception as e:
-            logging.error(f"Error computing entropies: {str(e)}")
-            continue
+        # Compute semantic entropy
+        log_likelihood_per_semantic_id = logsumexp_by_id(
+            semantic_ids, log_liks_agg, agg="sum_normalized"
+        )
+        pe = predictive_entropy_rao(log_likelihood_per_semantic_id)
+        entropies["semantic_entropy"].append(pe)
 
-        # Log response details
-        for i, response in enumerate(responses):
-            logging.info(
-                f"Response {i+1}: {response[:100]}..."
-                if len(response) > 100
-                else f"Response {i+1}: {response}"
-            )
+        # Logging
+        entropies_fmt = ", ".join([f"{i}:{j[-1]:.2f}" for i, j in entropies.items()])
+        logging.info(80 * "#")
+        logging.info("NEW ITEM %d at id=`%s`.", idx, tid)
+        logging.info("Context:\n%s", example["context"])
+        logging.info("Question:\n%s", question)
+        logging.info("True Answers:\n%s", example["reference"])
+        logging.info("Low Temperature Generation:\n%s", most_likely_answer["response"])
+        logging.info("High Temp Generation:\n%s", [r[0] for r in full_responses])
+        logging.info(
+            "semantic_ids: %s\navg_token_log_likelihoods: %s\nentropies: %s",
+            semantic_ids,
+            log_liks_agg,
+            entropies_fmt,
+        )
 
-    # Log final statistics
-    logging.info("\nFinal Statistics:")
-    for entropy_type, values in entropies.items():
-        mean_entropy = np.mean(values)
-        std_entropy = np.std(values)
-        logging.info(f"{entropy_type}:")
-        logging.info(f"  Mean: {mean_entropy:.4f}")
-        logging.info(f"  Std:  {std_entropy:.4f}")
+        count += 1
+        if count >= args.num_eval_samples:
+            logging.info("Breaking out of main loop.")
+            break
 
     result_dict["uncertainty_measures"] = entropies
-
-    # Save results
-    logging.info("Saving results to uncertainty_measures.pkl")
-    try:
-        utils.save(result_dict, "uncertainty_measures.pkl")
-        logging.info("Results saved successfully")
-    except Exception as e:
-        logging.error(f"Error saving results: {str(e)}")
-
-    logging.info("Saving entailment model prediction cache")
-    try:
-        entailment_model.save_prediction_cache()
-        logging.info("Prediction cache saved successfully")
-    except Exception as e:
-        logging.error(f"Error saving prediction cache: {str(e)}")
-
-    logging.info("Semantic uncertainty computation completed")
+    utils.save(result_dict, "uncertainty_measures.pkl")
+    entailment_model.save_prediction_cache()
 
 
 if __name__ == "__main__":
     parser = utils.get_parser(stages=["compute"])
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        raise ValueError(f"Unknown args: {unknown}")
+    logging.info("Args: %s", args)
     main(args)
