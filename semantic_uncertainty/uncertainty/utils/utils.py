@@ -64,6 +64,7 @@ def get_parser(stages=["generate", "compute"]):
             "--cot_prompt",
             type=str,
             default=None,
+            action=argparse.BooleanOptionalAction,
             help="Custom chain of thought prompt template",
         )
         parser.add_argument(
