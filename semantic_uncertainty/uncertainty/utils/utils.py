@@ -13,10 +13,12 @@ from uncertainty.models.huggingface_models import HuggingfaceModel
 from uncertainty.utils import openai as oai
 from uncertainty.models.speculative_sampling_model import SpeculativeSamplingModel
 from uncertainty.models.cot_model import ChainOfThoughtHuggingfaceModel
+from uncertainty.models.cot_w_prompting import ChainOfThoughtModel
 
 BRIEF_PROMPTS = {
     "default": "Answer the following question as briefly as possible.\n",
     "chat": "Answer the following question in a single brief but complete sentence.\n",
+    "cot": "Think through this step by step, then provide a brief final answer.\n",
 }
 
 
@@ -57,6 +59,12 @@ def get_parser(stages=["generate", "compute"]):
             default=False,
             action=argparse.BooleanOptionalAction,
             help="Use chain of thought decoding",
+        )
+        parser.add_argument(
+            "--cot_prompt",
+            type=str,
+            default=None,
+            help="Custom chain of thought prompt template",
         )
         parser.add_argument(
             "--num_branches",
@@ -328,7 +336,7 @@ def split_dataset(dataset):
 
 
 def model_based_metric(predicted_answer, example, model):
-    """Modified to handle chain of thought models consistently."""
+    """Modified to handle both types of chain of thought models."""
     if "answers" in example:
         correct_answers = example["answers"]["text"]
     elif "reference" in example:
@@ -352,8 +360,8 @@ def model_based_metric(predicted_answer, example, model):
             if len(correct_answers) == 1
             else "any of the expected answers"
         )
+        + "? Respond only with yes or no.\nResponse:"
     )
-    prompt += "? Respond only with yes or no.\nResponse:"
 
     try:
         if "gpt" in model.model_name.lower():
@@ -364,9 +372,12 @@ def model_based_metric(predicted_answer, example, model):
                     prompt,
                     temperature=0.01,
                     use_branching=True,
-                    num_branches=model.num_branches,  # Use model's configured branches
+                    num_branches=model.num_branches,
                 )
-                # Ensure consistent return format
+                if isinstance(response, tuple):
+                    response, _, _ = response
+            elif isinstance(model, ChainOfThoughtModel):
+                response = model.predict(prompt, temperature=0.01)
                 if isinstance(response, tuple):
                     response, _, _ = response
             else:
@@ -386,6 +397,10 @@ def model_based_metric(predicted_answer, example, model):
                 use_branching=True,
                 num_branches=model.num_branches,
             )
+            if isinstance(response, tuple):
+                response, _, _ = response
+        elif isinstance(model, ChainOfThoughtModel):
+            response = model.predict(prompt, temperature=1.0)
             if isinstance(response, tuple):
                 response, _, _ = response
         else:
@@ -450,12 +465,22 @@ def init_model(args):
                 mn,
                 stop_sequences="default",
                 max_new_tokens=args.model_max_new_tokens,
+                cot_prompt=args.cot_prompt if hasattr(args, "cot_prompt") else None,
             )
             # Set num_branches as model attribute for consistency
             model.num_branches = args.num_branches
             # Verify model initialization
             if not hasattr(model, "predict"):
                 raise AttributeError("CoT model missing predict method")
+        elif args.use_cot_prompt:
+            model = ChainOfThoughtModel(
+                mn,
+                stop_sequences="default",
+                max_new_tokens=args.model_max_new_tokens,
+                cot_prompt=args.cot_prompt,
+            )
+            if not hasattr(model, "predict"):
+                raise AttributeError("ChainOfThoughtModel missing predict method")
         elif "llama" in mn.lower() or "falcon" in mn or "mistral" in mn.lower():
             model = HuggingfaceModel(
                 mn,
@@ -466,9 +491,8 @@ def init_model(args):
             raise ValueError(f"Unknown model_name `{mn}`.")
 
         # Verify model outputs match expected format
-        test_prompt = "Test prompt."
         test_output = model.predict(test_prompt, temperature=0.1)
-        if isinstance(model, ChainOfThoughtHuggingfaceModel):
+        if isinstance(model, (ChainOfThoughtModel, ChainOfThoughtHuggingfaceModel)):
             if not isinstance(test_output, tuple) or len(test_output) != 3:
                 raise ValueError(
                     "CoT model predict should return (text, log_probs, embedding)"
@@ -487,7 +511,11 @@ def get_make_prompt(args):
         def make_prompt(context, question, answer, brief, brief_always):
             prompt = ""
             if brief_always:
-                prompt += brief
+                # Use CoT-specific brief prompt if either CoT approach is enabled
+                if args.use_chain_of_thought or args.use_cot_prompt:
+                    prompt += BRIEF_PROMPTS["cot"]
+                else:
+                    prompt += brief
             if args.use_context and (context is not None):
                 prompt += f"Context: {context}\n"
             prompt += f"Question: {question}\n"

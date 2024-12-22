@@ -13,18 +13,34 @@ import wandb
 from uncertainty.data.data_utils import load_ds
 from uncertainty.utils import utils
 from uncertainty.models.cot_model import ChainOfThoughtHuggingfaceModel
+from uncertainty.models.cot_w_prompting import ChainOfThoughtModel
 
 utils.setup_logger()
 
 
 def process_model_output(output, model):
     """Ensure consistent output format across model types."""
-    if isinstance(model, ChainOfThoughtHuggingfaceModel):
+    # Handle different model types and their output formats
+    if isinstance(model, (ChainOfThoughtHuggingfaceModel, ChainOfThoughtModel)):
         if isinstance(output, tuple) and len(output) == 3:
             return output
         else:
+            # If the output isn't in the expected format, provide default values
             return output, [], None
     return output
+
+
+def get_model_predict_args(model, args):
+    """Get the appropriate prediction arguments based on model type."""
+    predict_args = {"temperature": args.temperature}
+
+    if isinstance(model, ChainOfThoughtHuggingfaceModel):
+        predict_args.update({"use_branching": True, "num_branches": args.num_branches})
+    elif isinstance(model, ChainOfThoughtModel):
+        # ChainOfThoughtModel doesn't need additional arguments
+        pass
+
+    return predict_args
 
 
 def main(args):
@@ -119,14 +135,11 @@ def main(args):
             temperature = 0.1 if i == 0 else args.temperature
 
             try:
-                output = model.predict(
-                    local_prompt,
-                    temperature,
-                    use_branching=args.use_chain_of_thought,
-                    num_branches=(
-                        args.num_branches if args.use_chain_of_thought else None
-                    ),
-                )
+                # Get appropriate prediction arguments based on model type
+                predict_args = get_model_predict_args(model, args)
+                predict_args["temperature"] = temperature
+
+                output = model.predict(local_prompt, **predict_args)
                 predicted_answer, token_log_likelihoods, embedding = (
                     process_model_output(output, model)
                 )
