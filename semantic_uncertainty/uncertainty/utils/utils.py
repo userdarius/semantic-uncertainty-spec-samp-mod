@@ -63,8 +63,14 @@ def get_parser(stages=["generate", "compute"]):
         parser.add_argument(
             "--cot_prompt",
             default=None,
-            action=argparse.BooleanOptionalAction,
+            type=str,
             help="Custom chain of thought prompt template",
+        )
+        parser.add_argument(
+            "--use_cot_prompt",
+            default=False,
+            action=argparse.BooleanOptionalAction,
+            help="Use chain of thought prompting using ChainOfThoughtModel",
         )
         parser.add_argument(
             "--num_branches",
