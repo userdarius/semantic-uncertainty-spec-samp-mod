@@ -62,7 +62,6 @@ def get_parser(stages=["generate", "compute"]):
         )
         parser.add_argument(
             "--cot_prompt",
-            type=str,
             default=None,
             action=argparse.BooleanOptionalAction,
             help="Custom chain of thought prompt template",
@@ -473,7 +472,7 @@ def init_model(args):
             # Verify model initialization
             if not hasattr(model, "predict"):
                 raise AttributeError("CoT model missing predict method")
-        elif args.use_cot_prompt:
+        elif args.cot_prompt:
             model = ChainOfThoughtModel(
                 mn,
                 stop_sequences="default",
