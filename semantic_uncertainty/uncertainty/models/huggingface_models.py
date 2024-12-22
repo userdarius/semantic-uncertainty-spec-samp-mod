@@ -112,6 +112,8 @@ class HuggingfaceModel(BaseModel):
 
             if "Llama-3.2" in model_name:
                 base = "meta-llama"
+            elif "Llama-3.1" in model_name:
+                base = "meta-llama"
             elif "Llama-2" in model_name:
                 base = "meta-llama"
                 model_name = model_name + "-hf"
@@ -123,6 +125,15 @@ class HuggingfaceModel(BaseModel):
             )
 
             if "3.2" in model_name:
+                kwargs = {}
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    f"{base}/{model_name}",
+                    device_map="auto",
+                    max_memory={0: "80GIB"},
+                    **kwargs,
+                )
+                self.token_limit = 128000  # 128k tokens supported
+            elif "Llama-3.1" in model_name:
                 kwargs = {}
                 self.model = AutoModelForCausalLM.from_pretrained(
                     f"{base}/{model_name}",
