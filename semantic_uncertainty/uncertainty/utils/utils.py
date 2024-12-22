@@ -491,6 +491,7 @@ def init_model(args):
             raise ValueError(f"Unknown model_name `{mn}`.")
 
         # Verify model outputs match expected format
+        test_prompt = "Test prompt."
         test_output = model.predict(test_prompt, temperature=0.1)
         if isinstance(model, (ChainOfThoughtModel, ChainOfThoughtHuggingfaceModel)):
             if not isinstance(test_output, tuple) or len(test_output) != 3:
